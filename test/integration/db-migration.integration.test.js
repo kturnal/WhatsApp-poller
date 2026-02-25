@@ -82,9 +82,15 @@ test('legacy polls uniqueness migrates to group-scoped indexes', () => {
   const groupMessageIndex = indexes.find(
     (index) => index.name === 'idx_polls_group_message_unique'
   );
+  const legacyAutoIndexes = indexes.filter((index) => /^sqlite_autoindex_polls_/u.test(index.name));
 
   assert.ok(groupWeekIndex, 'group/week unique index should exist');
   assert.ok(groupMessageIndex, 'group/message unique index should exist');
+  assert.equal(
+    legacyAutoIndexes.length,
+    0,
+    'legacy single-column unique autoindexes should be removed'
+  );
 
   const groupWeekColumns = pollDb.db
     .prepare("PRAGMA index_info('idx_polls_group_week_unique')")

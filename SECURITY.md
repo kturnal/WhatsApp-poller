@@ -8,7 +8,16 @@ This project currently supports the latest code on the default branch.
 
 Please do not open public issues for sensitive vulnerabilities.
 
-Report security issues by contacting the maintainer privately and include:
+Report security issues using GitHub private vulnerability reporting:
+
+- https://github.com/kturnal/WhatsApp-poller/security/advisories/new
+
+Expected response time:
+
+- Initial acknowledgement within 3 business days
+- Ongoing updates until remediation and disclosure plan are agreed
+
+Please include:
 
 - Summary and impact
 - Affected versions/commit

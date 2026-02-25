@@ -200,10 +200,11 @@ function loadConfig() {
   const logRedactSensitive = parseBoolean('LOG_REDACT_SENSITIVE', true);
   const logIncludeStack = parseBoolean('LOG_INCLUDE_STACK', false);
 
-  const commandPrefix = process.env.COMMAND_PREFIX?.trim() || '!schedule';
-  if (!commandPrefix) {
+  const rawCommandPrefix = process.env.COMMAND_PREFIX;
+  if (rawCommandPrefix !== undefined && rawCommandPrefix.trim() === '') {
     throw new Error('COMMAND_PREFIX cannot be empty.');
   }
+  const commandPrefix = rawCommandPrefix === undefined ? '!schedule' : rawCommandPrefix.trim();
 
   const commandRateLimitCount = parseInteger('COMMAND_RATE_LIMIT_COUNT', 8);
   if (commandRateLimitCount < 1) {

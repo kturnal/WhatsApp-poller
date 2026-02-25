@@ -1,7 +1,7 @@
 # WhatsApp Poller Bot
 
-[![CI](https://github.com/kaganbatuker/whatsapp-poller/actions/workflows/ci.yml/badge.svg)](https://github.com/kaganbatuker/whatsapp-poller/actions/workflows/ci.yml)
-[![Security](https://github.com/kaganbatuker/whatsapp-poller/actions/workflows/security.yml/badge.svg)](https://github.com/kaganbatuker/whatsapp-poller/actions/workflows/security.yml)
+[![CI](https://github.com/kturnal/WhatsApp-poller/actions/workflows/ci.yml/badge.svg)](https://github.com/kturnal/WhatsApp-poller/actions/workflows/ci.yml)
+[![Security](https://github.com/kturnal/WhatsApp-poller/actions/workflows/security.yml/badge.svg)](https://github.com/kturnal/WhatsApp-poller/actions/workflows/security.yml)
 
 Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
@@ -22,7 +22,7 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
 - npm
 - A WhatsApp account available for QR login
 

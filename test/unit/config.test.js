@@ -8,7 +8,11 @@ function withEnv(overrides, fn) {
 
   for (const [key, value] of Object.entries(overrides)) {
     previous[key] = process.env[key];
-    process.env[key] = value;
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
 
   try {
@@ -42,20 +46,24 @@ test('normalizeJid throws for empty input', () => {
 });
 
 test('loadConfig reads security defaults and validates command guardrails', () => {
-  withEnv(baseEnv, () => {
-    delete process.env.ALLOW_INSECURE_CHROMIUM;
-    delete process.env.LOG_REDACT_SENSITIVE;
-    delete process.env.LOG_INCLUDE_STACK;
+  withEnv(
+    {
+      ...baseEnv,
+      ALLOW_INSECURE_CHROMIUM: undefined,
+      LOG_REDACT_SENSITIVE: undefined,
+      LOG_INCLUDE_STACK: undefined
+    },
+    () => {
+      const config = loadConfig();
 
-    const config = loadConfig();
-
-    assert.equal(config.allowInsecureChromium, false);
-    assert.equal(config.logRedactSensitive, true);
-    assert.equal(config.logIncludeStack, false);
-    assert.equal(config.commandRateLimitCount, 8);
-    assert.equal(config.commandRateLimitWindowMs, 60000);
-    assert.equal(config.commandMaxLength, 256);
-  });
+      assert.equal(config.allowInsecureChromium, false);
+      assert.equal(config.logRedactSensitive, true);
+      assert.equal(config.logIncludeStack, false);
+      assert.equal(config.commandRateLimitCount, 8);
+      assert.equal(config.commandRateLimitWindowMs, 60000);
+      assert.equal(config.commandMaxLength, 256);
+    }
+  );
 });
 
 test('loadConfig rejects non-integer values with trailing text', () => {

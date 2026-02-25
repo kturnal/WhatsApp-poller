@@ -107,63 +107,73 @@ class PollDatabase {
   }
 
   #migrateToGroupScopedUniqueness() {
-    this.db.exec(`
-      PRAGMA foreign_keys = OFF;
-      BEGIN IMMEDIATE;
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    this.db.exec('BEGIN IMMEDIATE');
 
-      ALTER TABLE polls RENAME TO polls_legacy;
-      ALTER TABLE poll_votes RENAME TO poll_votes_legacy;
+    try {
+      this.db.exec(`
+        ALTER TABLE polls RENAME TO polls_legacy;
+        ALTER TABLE poll_votes RENAME TO poll_votes_legacy;
 
-      ${this.#pollTableSql('polls')}
-      ${this.#pollVotesTableSql('poll_votes')}
+        ${this.#pollTableSql('polls')}
+        ${this.#pollVotesTableSql('poll_votes')}
 
-      INSERT INTO polls (
-        id,
-        group_id,
-        week_key,
-        poll_message_id,
-        question,
-        options_json,
-        status,
-        created_at,
-        closes_at,
-        closed_at,
-        close_reason,
-        tie_deadline_at,
-        tie_option_indices_json,
-        winning_option_idx,
-        winner_vote_count,
-        announced_at
-      )
-      SELECT
-        id,
-        group_id,
-        week_key,
-        poll_message_id,
-        question,
-        options_json,
-        status,
-        created_at,
-        closes_at,
-        closed_at,
-        close_reason,
-        tie_deadline_at,
-        tie_option_indices_json,
-        winning_option_idx,
-        winner_vote_count,
-        announced_at
-      FROM polls_legacy;
+        INSERT INTO polls (
+          id,
+          group_id,
+          week_key,
+          poll_message_id,
+          question,
+          options_json,
+          status,
+          created_at,
+          closes_at,
+          closed_at,
+          close_reason,
+          tie_deadline_at,
+          tie_option_indices_json,
+          winning_option_idx,
+          winner_vote_count,
+          announced_at
+        )
+        SELECT
+          id,
+          group_id,
+          week_key,
+          poll_message_id,
+          question,
+          options_json,
+          status,
+          created_at,
+          closes_at,
+          closed_at,
+          close_reason,
+          tie_deadline_at,
+          tie_option_indices_json,
+          winning_option_idx,
+          winner_vote_count,
+          announced_at
+        FROM polls_legacy;
 
-      INSERT INTO poll_votes (poll_id, voter_jid, selected_options_json, updated_at)
-      SELECT poll_id, voter_jid, selected_options_json, updated_at
-      FROM poll_votes_legacy;
+        INSERT INTO poll_votes (poll_id, voter_jid, selected_options_json, updated_at)
+        SELECT poll_id, voter_jid, selected_options_json, updated_at
+        FROM poll_votes_legacy;
 
-      DROP TABLE poll_votes_legacy;
-      DROP TABLE polls_legacy;
+        DROP TABLE poll_votes_legacy;
+        DROP TABLE polls_legacy;
+      `);
 
-      COMMIT;
-      PRAGMA foreign_keys = ON;
-    `);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Ignore rollback errors and rethrow original migration failure below.
+      }
+      throw error;
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
   }
 
   #initSchema() {
