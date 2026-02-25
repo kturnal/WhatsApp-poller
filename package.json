@@ -17,6 +17,6 @@
     "luxon": "^3.5.0",
     "node-cron": "^3.0.3",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.34.1"
+    "whatsapp-web.js": "^1.17.1"
   }
 }

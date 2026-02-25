@@ -18,6 +18,7 @@ pnpm-debug.log*
 dist/
 build/
 .cache/
+.wwebjs_cache/
 coverage/
 .nyc_output/
 tmp/
