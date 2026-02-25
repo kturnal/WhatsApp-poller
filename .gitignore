@@ -18,10 +18,12 @@ pnpm-debug.log*
 dist/
 build/
 .cache/
+.wwebjs_cache/
 coverage/
 .nyc_output/
 tmp/
 temp/
+data/
 
 # Process/runtime files
 *.pid
