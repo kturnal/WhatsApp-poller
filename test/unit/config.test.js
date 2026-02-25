@@ -51,7 +51,10 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       ...baseEnv,
       ALLOW_INSECURE_CHROMIUM: undefined,
       LOG_REDACT_SENSITIVE: undefined,
-      LOG_INCLUDE_STACK: undefined
+      LOG_INCLUDE_STACK: undefined,
+      COMMAND_RATE_LIMIT_COUNT: undefined,
+      COMMAND_RATE_LIMIT_WINDOW_MS: undefined,
+      COMMAND_MAX_LENGTH: undefined
     },
     () => {
       const config = loadConfig();
