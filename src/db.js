@@ -235,6 +235,15 @@ class PollDatabase {
 
     stmt.run(closedAt, closeReason, winnerIdx, winnerVotes, announcedAt, pollId);
   }
+
+  close() {
+    if (!this.db) {
+      return;
+    }
+
+    this.db.close();
+    this.db = null;
+  }
 }
 
 module.exports = {

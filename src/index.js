@@ -169,8 +169,7 @@ class GameSchedulerBot {
     this.pollLocks.add(pollId);
 
     try {
-      await callback();
-      return true;
+      return await callback();
     } finally {
       this.pollLocks.delete(pollId);
     }
@@ -198,6 +197,17 @@ class GameSchedulerBot {
 
     this.closeTimers.clear();
     this.tieTimers.clear();
+
+    if (this.db && typeof this.db.close === 'function') {
+      try {
+        this.db.close();
+      } catch (error) {
+        log('ERROR', 'Failed to close SQLite database.', {
+          error: error?.message,
+          stack: error?.stack
+        });
+      }
+    }
 
     await this.client.destroy();
   }
@@ -406,11 +416,18 @@ class GameSchedulerBot {
       return;
     }
 
+    const timeoutDelay = Math.min(delay, MAX_TIMEOUT_MS);
     const timeout = setTimeout(() => {
+      const remaining = tieDeadlineAt - Date.now();
+      if (remaining > 0) {
+        this.scheduleTieTimer(pollId, tieDeadlineAt);
+        return;
+      }
+
       this.#safeRun('tie_timer', async () => {
         await this.handleTieTimeout(pollId);
       });
-    }, delay);
+    }, timeoutDelay);
 
     this.tieTimers.set(pollId, timeout);
   }
@@ -619,7 +636,7 @@ class GameSchedulerBot {
     });
   }
 
-  async announceWinner(poll, winnerIdx, winnerVotes, closeReason) {
+  finalizeWinner(poll, winnerIdx, winnerVotes, closeReason) {
     const timestamp = Date.now();
 
     this.db.setAnnounced({
@@ -636,8 +653,7 @@ class GameSchedulerBot {
 
     const slotLabel = poll.options[winnerIdx]?.label || `Option ${winnerIdx + 1}`;
     const voteWord = winnerVotes === 1 ? 'vote' : 'votes';
-
-    await this.sendGroupMessage(`Weekly game slot selected: ${slotLabel} (${winnerVotes} ${voteWord}).`);
+    const announcementText = `Weekly game slot selected: ${slotLabel} (${winnerVotes} ${voteWord}).`;
 
     log('INFO', 'Winner announced.', {
       pollId: poll.id,
@@ -645,6 +661,13 @@ class GameSchedulerBot {
       winnerVotes,
       closeReason
     });
+
+    return announcementText;
+  }
+
+  async announceWinner(poll, winnerIdx, winnerVotes, closeReason) {
+    const announcementText = this.finalizeWinner(poll, winnerIdx, winnerVotes, closeReason);
+    await this.sendGroupMessage(announcementText);
   }
 
   async onMessageCreate(message) {
@@ -758,29 +781,47 @@ class GameSchedulerBot {
 
     const optionIdx = optionNumber - 1;
 
-    const executed = await this.withPollLock(active.id, async () => {
+    const lockResult = await this.withPollLock(active.id, async () => {
       const latest = this.db.getPollById(active.id);
       if (!latest || latest.status !== 'TIE_PENDING') {
-        await this.sendGroupMessage('No tie is waiting for manual pick right now.');
-        return;
+        return { status: 'no_tie' };
       }
 
       if (!latest.tieOptionIndices.includes(optionIdx)) {
-        const tied = latest.tieOptionIndices.map((index) => index + 1).join(', ');
-        await this.sendGroupMessage(`Invalid option. Allowed tied option numbers: ${tied}`);
-        return;
+        return {
+          status: 'invalid_option',
+          tied: latest.tieOptionIndices.map((index) => index + 1)
+        };
       }
 
       this.clearTimer(this.tieTimers, latest.id);
 
       const summary = this.summarizePoll(latest);
       const winnerVotes = summary.counts[optionIdx] || 0;
+      const announcementText = this.finalizeWinner(latest, optionIdx, winnerVotes, 'manual-override');
 
-      await this.announceWinner(latest, optionIdx, winnerVotes, 'manual-override');
+      return { status: 'ok', announcementText };
     });
 
-    if (!executed) {
+    if (lockResult === false) {
       await this.sendGroupMessage('Another tie operation is in progress. Please retry in a moment.');
+      return;
+    }
+
+    if (lockResult.status === 'no_tie') {
+      await this.sendGroupMessage('No tie is waiting for manual pick right now.');
+      return;
+    }
+
+    if (lockResult.status === 'invalid_option') {
+      await this.sendGroupMessage(
+        `Invalid option. Allowed tied option numbers: ${lockResult.tied.join(', ')}`
+      );
+      return;
+    }
+
+    if (lockResult.status === 'ok') {
+      await this.sendGroupMessage(lockResult.announcementText);
     }
   }
 
