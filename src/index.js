@@ -17,6 +17,13 @@ const {
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
+/**
+ * Writes a timestamped log line to stdout and optionally appends JSON-serialized metadata.
+ *
+ * @param {string} level - Log level label (e.g. "info", "warn", "error").
+ * @param {string} message - Main log message.
+ * @param {any} [metadata] - Optional additional data appended as JSON; omitted when null or undefined.
+ */
 function log(level, message, metadata = null) {
   const timestamp = DateTime.now().toISO();
   const prefix = `[${timestamp}] [${level}] ${message}`;
@@ -29,6 +36,11 @@ function log(level, message, metadata = null) {
   console.log(`${prefix} ${JSON.stringify(metadata)}`);
 }
 
+/**
+ * Extracts a normalized message identifier from a message object.
+ * @param {object} message - Message object that may contain an `id` field.
+ * @returns {string|null} A string identifier for the message if present, `null` otherwise.
+ */
 function serializeMessageId(message) {
   if (!message || !message.id) {
     return null;
@@ -37,6 +49,12 @@ function serializeMessageId(message) {
   return serializeMessageKey(message.id);
 }
 
+/**
+ * Normalize various message-key shapes into a single serialized identifier.
+ *
+ * @param {*} key - The message key to normalize; may be a serialized string, an object with an `_serialized` property, an object with an `id` string, or an object whose `id` contains an `_serialized` string.
+ * @returns {string|null} The serialized message key when present, otherwise `null`.
+ */
 function serializeMessageKey(key) {
   if (!key) {
     return null;
@@ -61,6 +79,11 @@ function serializeMessageKey(key) {
   return null;
 }
 
+/**
+ * Derives a normalized parent message identifier from a vote update object.
+ * @param {Object} voteUpdate - Object containing one or more message key fields from a vote update event.
+ * @returns {string|null} The serialized parent message id if found, or `null` when no valid id is present.
+ */
 function extractParentMessageId(voteUpdate) {
   const candidates = [
     voteUpdate?.parentMessage?.id,
@@ -79,6 +102,11 @@ function extractParentMessageId(voteUpdate) {
   return null;
 }
 
+/**
+ * Determine the normalized sender JID from a WhatsApp message object.
+ * @param {object} message - The WhatsApp message object (may be partial); commonly checks `author`, `id.participant`, or `from` to locate the sender.
+ * @returns {string|null} The normalized sender JID, or `null` if no valid sender is found.
+ */
 function getMessageSenderJid(message) {
   const sender = message?.author || message?.id?.participant || message?.from;
   if (!sender) {
@@ -831,6 +859,13 @@ class GameSchedulerBot {
   }
 }
 
+/**
+ * Initialize and start the GameSchedulerBot and register graceful shutdown handlers.
+ *
+ * Sets up SIGINT and SIGTERM listeners and an uncaughtException handler to ensure the bot's
+ * shutdown procedure runs at most once, preserves the highest exit code requested, and exits
+ * the process after shutdown completes (or logs and exits with code 1 on shutdown failure).
+ */
 async function main() {
   const config = loadConfig();
   const bot = new GameSchedulerBot(config);
