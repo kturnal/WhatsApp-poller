@@ -28,10 +28,12 @@ function parseInteger(name, fallback) {
     return fallback;
   }
 
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value)) {
+  const normalized = raw.trim();
+  if (!/^-?\d+$/.test(normalized)) {
     throw new Error(`Environment variable ${name} must be an integer.`);
   }
+
+  const value = Number.parseInt(normalized, 10);
 
   return value;
 }
@@ -133,7 +135,7 @@ function validateTimezone(timezone) {
  * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
  * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
  *
- * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string}} Configuration object containing validated and derived settings:
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number}} Configuration object containing validated and derived settings:
  * - `groupId`: WhatsApp group JID ending with `@g.us`.
  * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
  * - `allowedVoters`: Array of normalized voter JIDs.
@@ -148,6 +150,12 @@ function validateTimezone(timezone) {
  * - `dataDir`: Absolute path to the data directory.
  * - `headless`: Whether client runs headless (`true` or `false`).
  * - `commandPrefix`: Prefix for commands.
+ * - `allowInsecureChromium`: Allows Chromium to run without sandbox protections.
+ * - `logRedactSensitive`: Redacts phone/JID-like values in logs.
+ * - `logIncludeStack`: Includes stack traces in error logs.
+ * - `commandRateLimitCount`: Maximum accepted command count per sender window.
+ * - `commandRateLimitWindowMs`: Rate-limit window duration in milliseconds.
+ * - `commandMaxLength`: Maximum accepted command text length.
  */
 function loadConfig() {
   const groupId = mustReadEnv('GROUP_ID');
@@ -182,13 +190,35 @@ function loadConfig() {
 
   const pollCron = process.env.POLL_CRON?.trim() || '0 12 * * 1';
   const pollQuestion =
-    process.env.POLL_QUESTION?.trim() || `Weekly game night - pick all slots you can join (${timezone})`;
+    process.env.POLL_QUESTION?.trim() ||
+    `Weekly game night - pick all slots you can join (${timezone})`;
 
   const clientId = process.env.CLIENT_ID?.trim() || 'game-scheduler';
   const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR?.trim() || 'data');
   const headless = parseBoolean('HEADLESS', true);
+  const allowInsecureChromium = parseBoolean('ALLOW_INSECURE_CHROMIUM', false);
+  const logRedactSensitive = parseBoolean('LOG_REDACT_SENSITIVE', true);
+  const logIncludeStack = parseBoolean('LOG_INCLUDE_STACK', false);
 
   const commandPrefix = process.env.COMMAND_PREFIX?.trim() || '!schedule';
+  if (!commandPrefix) {
+    throw new Error('COMMAND_PREFIX cannot be empty.');
+  }
+
+  const commandRateLimitCount = parseInteger('COMMAND_RATE_LIMIT_COUNT', 8);
+  if (commandRateLimitCount < 1) {
+    throw new Error('COMMAND_RATE_LIMIT_COUNT must be >= 1.');
+  }
+
+  const commandRateLimitWindowMs = parseInteger('COMMAND_RATE_LIMIT_WINDOW_MS', 60000);
+  if (commandRateLimitWindowMs < 1000) {
+    throw new Error('COMMAND_RATE_LIMIT_WINDOW_MS must be >= 1000.');
+  }
+
+  const commandMaxLength = parseInteger('COMMAND_MAX_LENGTH', 256);
+  if (commandMaxLength < 16) {
+    throw new Error('COMMAND_MAX_LENGTH must be >= 16.');
+  }
 
   return {
     groupId,
@@ -204,7 +234,13 @@ function loadConfig() {
     clientId,
     dataDir,
     headless,
-    commandPrefix
+    commandPrefix,
+    allowInsecureChromium,
+    logRedactSensitive,
+    logIncludeStack,
+    commandRateLimitCount,
+    commandRateLimitWindowMs,
+    commandMaxLength
   };
 }
 

@@ -1,0 +1,263 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { EventEmitter } = require('node:events');
+
+const { GameSchedulerBot } = require('../../src/index');
+
+class FakeChat {
+  constructor() {
+    this.messages = [];
+    this.pollMessageCount = 0;
+  }
+
+  async sendMessage(payload) {
+    this.messages.push(payload);
+
+    if (payload && payload.kind === 'poll') {
+      this.pollMessageCount += 1;
+      return {
+        id: { _serialized: `poll-msg-${this.pollMessageCount}` },
+        pollOptions: payload.optionLabels.map((_, index) => ({ localId: `opt-${index}` }))
+      };
+    }
+
+    return {
+      id: { _serialized: `msg-${this.messages.length}` }
+    };
+  }
+}
+
+class FakeClient extends EventEmitter {
+  constructor(groupId, chat) {
+    super();
+    this.groupId = groupId;
+    this.chat = chat;
+    this.initialized = false;
+    this.destroyed = false;
+  }
+
+  async initialize() {
+    this.initialized = true;
+  }
+
+  async destroy() {
+    this.destroyed = true;
+  }
+
+  async getChatById(groupId) {
+    if (groupId !== this.groupId) {
+      throw new Error(`Unknown group id requested: ${groupId}`);
+    }
+
+    return this.chat;
+  }
+}
+
+function createConfig(dataDir, overrides = {}) {
+  const allowedVoters = [
+    '905551111111@c.us',
+    '905552222222@c.us',
+    '905553333333@c.us',
+    '905554444444@c.us',
+    '905555555555@c.us'
+  ];
+
+  return {
+    groupId: '1234567890-123456789@g.us',
+    ownerJid: '905551111111@c.us',
+    allowedVoters,
+    allowedVoterSet: new Set(allowedVoters),
+    requiredVoters: 2,
+    timezone: 'Europe/Istanbul',
+    pollCloseHours: 48,
+    tieOverrideHours: 6,
+    pollCron: '0 12 * * 1',
+    pollQuestion: 'Weekly game night test poll',
+    clientId: 'test-client',
+    dataDir,
+    headless: true,
+    commandPrefix: '!schedule',
+    allowInsecureChromium: false,
+    logRedactSensitive: false,
+    logIncludeStack: false,
+    commandRateLimitCount: 8,
+    commandRateLimitWindowMs: 60000,
+    commandMaxLength: 256,
+    ...overrides
+  };
+}
+
+function createHarness(overrides = {}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-test-'));
+  const chat = new FakeChat();
+  const baseConfig = createConfig(tempDir, overrides.config || {});
+  const client = new FakeClient(baseConfig.groupId, chat);
+
+  const bot = new GameSchedulerBot(baseConfig, {
+    clientFactory: () => client,
+    pollFactory: (question, optionLabels, options) => ({
+      kind: 'poll',
+      question,
+      optionLabels,
+      options
+    })
+  });
+
+  return {
+    bot,
+    chat,
+    client,
+    config: baseConfig,
+    cleanup: async () => {
+      await bot.shutdown('test');
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  };
+}
+
+test('quorum votes close poll and announce winner', async (t) => {
+  const harness = createHarness();
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  const latest = harness.bot.db.getPollByWeekKey(harness.config.groupId, activePoll.weekKey);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 0);
+
+  const textMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('tie can be resolved with owner manual pick', async (t) => {
+  const harness = createHarness();
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-1' }]
+  });
+
+  const tiePoll = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(tiePoll.status, 'TIE_PENDING');
+
+  await harness.bot.handleManualPick(
+    {
+      body: '!schedule pick 2',
+      from: harness.config.groupId,
+      author: harness.config.ownerJid
+    },
+    '2'
+  );
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 1);
+});
+
+test('command rate limiting drops excess commands from same sender', async (t) => {
+  const harness = createHarness({
+    config: {
+      commandRateLimitCount: 1,
+      commandRateLimitWindowMs: 60000
+    }
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.onMessageCreate({
+    body: '!schedule help',
+    from: harness.config.groupId,
+    author: '905552222222@c.us'
+  });
+
+  await harness.bot.onMessageCreate({
+    body: '!schedule help',
+    from: harness.config.groupId,
+    author: '905552222222@c.us'
+  });
+
+  const helpMessages = harness.chat.messages.filter((message) => {
+    return typeof message === 'string' && message.includes('Commands:');
+  });
+
+  assert.equal(helpMessages.length, 1);
+});
+
+test('recoverPendingPolls schedules both close and tie timers', async (t) => {
+  const harness = createHarness();
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const now = Date.now();
+
+  const openPollId = harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W01',
+    pollMessageId: 'open-message-id',
+    question: 'q1',
+    options: [{ label: 'Mon', localId: 'opt-0' }],
+    createdAt: now,
+    closesAt: now + 3600000
+  });
+
+  const tiePollId = harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W02',
+    pollMessageId: 'tie-message-id',
+    question: 'q2',
+    options: [
+      { label: 'Mon', localId: 'opt-0' },
+      { label: 'Tue', localId: 'opt-1' }
+    ],
+    createdAt: now,
+    closesAt: now + 3600000
+  });
+
+  harness.bot.db.setTiePending({
+    pollId: tiePollId,
+    closeReason: 'quorum',
+    closedAt: now,
+    tieDeadlineAt: now + 3600000,
+    tieOptionIndices: [0, 1]
+  });
+
+  harness.bot.recoverPendingPolls();
+
+  assert.ok(harness.bot.closeTimers.has(openPollId));
+  assert.ok(harness.bot.tieTimers.has(tiePollId));
+});

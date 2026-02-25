@@ -1,0 +1,15 @@
+services:
+  whatsapp-poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-poller
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp

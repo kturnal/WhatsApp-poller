@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-const fs = require('node:fs');
 const path = require('node:path');
 const cron = require('node-cron');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -9,32 +8,16 @@ const { Client, LocalAuth, Poll } = require('whatsapp-web.js');
 
 const { loadConfig, normalizeJid } = require('./config');
 const { PollDatabase } = require('./db');
+const { errorMetadata, log, setLogOptions } = require('./logger');
 const {
   buildOptionsForWeek,
   currentWeekContext,
   scheduledWeeklyRunForWeek
 } = require('./poll-slots');
+const { enforceSecureRuntimePermissions } = require('./runtime-security');
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-
-/**
- * Writes a timestamped log line to stdout and optionally appends JSON-serialized metadata.
- *
- * @param {string} level - Log level label (e.g. "info", "warn", "error").
- * @param {string} message - Main log message.
- * @param {any} [metadata] - Optional additional data appended as JSON; omitted when null or undefined.
- */
-function log(level, message, metadata = null) {
-  const timestamp = DateTime.now().toISO();
-  const prefix = `[${timestamp}] [${level}] ${message}`;
-
-  if (!metadata) {
-    console.log(prefix);
-    return;
-  }
-
-  console.log(`${prefix} ${JSON.stringify(metadata)}`);
-}
+const MAX_COMMAND_TOKENS = 6;
 
 /**
  * Extracts a normalized message identifier from a message object.
@@ -121,30 +104,65 @@ function getMessageSenderJid(message) {
 }
 
 class GameSchedulerBot {
-  constructor(config) {
+  constructor(config, dependencies = {}) {
     this.config = config;
+    this.now = dependencies.now || (() => Date.now());
 
-    fs.mkdirSync(this.config.dataDir, { recursive: true });
+    setLogOptions({
+      redactSensitive: this.config.logRedactSensitive,
+      includeStack: this.config.logIncludeStack
+    });
+
+    this.hardenRuntimePermissions('startup');
 
     this.db = new PollDatabase(path.join(this.config.dataDir, 'polls.sqlite'));
 
     this.closeTimers = new Map();
     this.tieTimers = new Map();
     this.pollLocks = new Set();
+    this.commandWindows = new Map();
 
-    this.client = new Client({
+    this.clientFactory =
+      dependencies.clientFactory ||
+      ((options) => {
+        return new Client(options);
+      });
+
+    this.pollFactory =
+      dependencies.pollFactory ||
+      ((question, optionLabels, options) => {
+        return new Poll(question, optionLabels, options);
+      });
+
+    const puppeteerArgs = [];
+    if (this.config.allowInsecureChromium) {
+      puppeteerArgs.push('--no-sandbox', '--disable-setuid-sandbox');
+      log('WARN', 'Chromium sandbox is disabled by ALLOW_INSECURE_CHROMIUM=true.');
+    }
+
+    this.client = this.clientFactory({
       authStrategy: new LocalAuth({
         clientId: this.config.clientId,
         dataPath: path.join(this.config.dataDir, 'session')
       }),
       puppeteer: {
         headless: this.config.headless,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: puppeteerArgs
       }
     });
 
     this.cronTask = null;
     this.#bindHandlers();
+  }
+
+  hardenRuntimePermissions(context) {
+    const remediations = enforceSecureRuntimePermissions(this.config.dataDir);
+    if (remediations.length > 0) {
+      log('WARN', 'Adjusted runtime file permissions.', {
+        context,
+        changes: remediations
+      });
+    }
   }
 
   #bindHandlers() {
@@ -182,10 +200,7 @@ class GameSchedulerBot {
 
   #safeRun(source, fn) {
     fn().catch((error) => {
-      log('ERROR', `Unhandled error in ${source}.`, {
-        error: error?.message,
-        stack: error?.stack
-      });
+      log('ERROR', `Unhandled error in ${source}.`, errorMetadata(error));
     });
   }
 
@@ -201,6 +216,31 @@ class GameSchedulerBot {
     } finally {
       this.pollLocks.delete(pollId);
     }
+  }
+
+  isRateLimited(senderJid) {
+    const now = this.now();
+    const cutoff = now - this.config.commandRateLimitWindowMs;
+
+    for (const [jid, timestamps] of this.commandWindows.entries()) {
+      const filtered = timestamps.filter((timestamp) => timestamp > cutoff);
+      if (filtered.length === 0) {
+        this.commandWindows.delete(jid);
+      } else {
+        this.commandWindows.set(jid, filtered);
+      }
+    }
+
+    const senderTimestamps = this.commandWindows.get(senderJid) || [];
+
+    if (senderTimestamps.length >= this.config.commandRateLimitCount) {
+      return true;
+    }
+
+    senderTimestamps.push(now);
+    this.commandWindows.set(senderJid, senderTimestamps);
+
+    return false;
   }
 
   async start() {
@@ -230,10 +270,7 @@ class GameSchedulerBot {
       try {
         this.db.close();
       } catch (error) {
-        log('ERROR', 'Failed to close SQLite database.', {
-          error: error?.message,
-          stack: error?.stack
-        });
+        log('ERROR', 'Failed to close SQLite database.', errorMetadata(error));
       }
     }
 
@@ -242,6 +279,7 @@ class GameSchedulerBot {
 
   async onReady() {
     await this.client.getChatById(this.config.groupId);
+    this.hardenRuntimePermissions('post-ready');
 
     log('INFO', 'WhatsApp client is ready.', {
       groupId: this.config.groupId,
@@ -279,7 +317,7 @@ class GameSchedulerBot {
   }
 
   recoverPendingPolls() {
-    const pendingPolls = this.db.listRecoverablePolls();
+    const pendingPolls = this.db.listRecoverablePolls(this.config.groupId);
 
     if (pendingPolls.length === 0) {
       return;
@@ -304,12 +342,12 @@ class GameSchedulerBot {
       return;
     }
 
-    const existing = this.db.getPollByWeekKey(weekKey);
+    const existing = this.db.getPollByWeekKey(this.config.groupId, weekKey);
     if (existing) {
       return;
     }
 
-    const active = this.db.getActivePoll();
+    const active = this.db.getActivePoll(this.config.groupId);
     if (active) {
       log('INFO', 'Skipping catch-up poll creation because an active poll exists.', {
         activePollId: active.id,
@@ -322,7 +360,7 @@ class GameSchedulerBot {
   }
 
   async createWeeklyPollIfNeeded(trigger) {
-    const active = this.db.getActivePoll();
+    const active = this.db.getActivePoll(this.config.groupId);
     if (active) {
       log('INFO', 'Skipping weekly poll creation because an active poll exists.', {
         activePollId: active.id,
@@ -333,7 +371,7 @@ class GameSchedulerBot {
     }
 
     const { now, weekYear, weekNumber, weekKey } = currentWeekContext(this.config.timezone);
-    const existingThisWeek = this.db.getPollByWeekKey(weekKey);
+    const existingThisWeek = this.db.getPollByWeekKey(this.config.groupId, weekKey);
 
     if (existingThisWeek) {
       log('INFO', 'Weekly poll already exists for week key.', {
@@ -352,7 +390,7 @@ class GameSchedulerBot {
     try {
       const chat = await this.client.getChatById(this.config.groupId);
       const sentMessage = await chat.sendMessage(
-        new Poll(this.config.pollQuestion, optionLabels, { allowMultipleAnswers: true })
+        this.pollFactory(this.config.pollQuestion, optionLabels, { allowMultipleAnswers: true })
       );
 
       pollMessageId = serializeMessageId(sentMessage);
@@ -392,13 +430,15 @@ class GameSchedulerBot {
       });
     } catch (error) {
       if (pollMessageId) {
-        log('ERROR', 'Poll was sent but failed to persist in SQLite.', {
-          weekKey,
-          pollMessageId,
-          trigger,
-          error: error?.message,
-          stack: error?.stack
-        });
+        log(
+          'ERROR',
+          'Poll was sent but failed to persist in SQLite.',
+          errorMetadata(error, {
+            weekKey,
+            pollMessageId,
+            trigger
+          })
+        );
       }
       throw error;
     }
@@ -407,7 +447,7 @@ class GameSchedulerBot {
   scheduleCloseTimer(pollId, closesAt) {
     this.clearTimer(this.closeTimers, pollId);
 
-    const delay = closesAt - Date.now();
+    const delay = closesAt - this.now();
 
     if (delay <= 0) {
       this.#safeRun('close_timer_immediate', async () => {
@@ -418,7 +458,7 @@ class GameSchedulerBot {
 
     const timeoutDelay = Math.min(delay, MAX_TIMEOUT_MS);
     const timeout = setTimeout(() => {
-      const remaining = closesAt - Date.now();
+      const remaining = closesAt - this.now();
       if (remaining > 0) {
         this.scheduleCloseTimer(pollId, closesAt);
         return;
@@ -435,7 +475,7 @@ class GameSchedulerBot {
   scheduleTieTimer(pollId, tieDeadlineAt) {
     this.clearTimer(this.tieTimers, pollId);
 
-    const delay = tieDeadlineAt - Date.now();
+    const delay = tieDeadlineAt - this.now();
 
     if (delay <= 0) {
       this.#safeRun('tie_timer_immediate', async () => {
@@ -446,7 +486,7 @@ class GameSchedulerBot {
 
     const timeoutDelay = Math.min(delay, MAX_TIMEOUT_MS);
     const timeout = setTimeout(() => {
-      const remaining = tieDeadlineAt - Date.now();
+      const remaining = tieDeadlineAt - this.now();
       if (remaining > 0) {
         this.scheduleTieTimer(pollId, tieDeadlineAt);
         return;
@@ -514,7 +554,7 @@ class GameSchedulerBot {
       return;
     }
 
-    const poll = this.db.getPollByMessageId(pollMessageId);
+    const poll = this.db.getPollByMessageId(this.config.groupId, pollMessageId);
     if (!poll || poll.status !== 'OPEN') {
       return;
     }
@@ -578,7 +618,7 @@ class GameSchedulerBot {
       pollId: poll.id,
       voterJid,
       selectedOptions,
-      updatedAt: Date.now()
+      updatedAt: this.now()
     });
 
     const summary = this.summarizePoll(poll);
@@ -597,7 +637,7 @@ class GameSchedulerBot {
       this.clearTimer(this.closeTimers, pollId);
 
       const summary = this.summarizePoll(poll);
-      const closedAt = Date.now();
+      const closedAt = this.now();
 
       if (summary.maxVotes <= 0 || summary.topIndices.length === 0) {
         this.db.setAnnounced({
@@ -665,7 +705,7 @@ class GameSchedulerBot {
   }
 
   finalizeWinner(poll, winnerIdx, winnerVotes, closeReason) {
-    const timestamp = Date.now();
+    const timestamp = this.now();
 
     this.db.setAnnounced({
       pollId: poll.id,
@@ -708,11 +748,45 @@ class GameSchedulerBot {
       return;
     }
 
-    if (!body.toLowerCase().startsWith(this.config.commandPrefix.toLowerCase())) {
+    if (body.length > this.config.commandMaxLength) {
+      log('WARN', 'Ignoring command: payload is too long.', {
+        bodyLength: body.length,
+        limit: this.config.commandMaxLength
+      });
       return;
     }
 
-    const parts = body.split(/\s+/);
+    const parts = body.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return;
+    }
+
+    if (parts.length > MAX_COMMAND_TOKENS) {
+      log('WARN', 'Ignoring command: too many tokens.', {
+        tokenCount: parts.length,
+        limit: MAX_COMMAND_TOKENS
+      });
+      return;
+    }
+
+    if (parts[0].toLowerCase() !== this.config.commandPrefix.toLowerCase()) {
+      return;
+    }
+
+    const senderJid = getMessageSenderJid(message);
+    if (!senderJid) {
+      return;
+    }
+
+    if (this.isRateLimited(senderJid)) {
+      log('WARN', 'Rate-limited incoming command.', {
+        senderJid,
+        windowMs: this.config.commandRateLimitWindowMs,
+        limit: this.config.commandRateLimitCount
+      });
+      return;
+    }
+
     const subCommand = (parts[1] || 'help').toLowerCase();
 
     if (subCommand === 'help') {
@@ -743,16 +817,18 @@ class GameSchedulerBot {
   }
 
   buildStatusText() {
-    const active = this.db.getActivePoll();
+    const active = this.db.getActivePoll(this.config.groupId);
 
     if (!active) {
-      const latest = this.db.getLatestPoll();
+      const latest = this.db.getLatestPoll(this.config.groupId);
       if (!latest) {
         return 'No poll has been created yet.';
       }
 
       const announcedAt = latest.announcedAt
-        ? DateTime.fromMillis(latest.announcedAt, { zone: this.config.timezone }).toFormat('ccc LLL d HH:mm')
+        ? DateTime.fromMillis(latest.announcedAt, { zone: this.config.timezone }).toFormat(
+            'ccc LLL d HH:mm'
+          )
         : 'n/a';
 
       if (Number.isInteger(latest.winningOptionIdx)) {
@@ -765,21 +841,24 @@ class GameSchedulerBot {
     const summary = this.summarizePoll(active);
     const topDescription = summary.topIndices.length
       ? summary.topIndices
-          .map((index) => `${index + 1}) ${active.options[index].label} - ${summary.counts[index]} votes`)
+          .map(
+            (index) =>
+              `${index + 1}) ${active.options[index].label} - ${summary.counts[index]} votes`
+          )
           .join(' | ')
       : 'No votes yet';
 
     if (active.status === 'OPEN') {
-      const closesAtText = DateTime.fromMillis(active.closesAt, { zone: this.config.timezone }).toFormat(
-        'ccc LLL d HH:mm'
-      );
+      const closesAtText = DateTime.fromMillis(active.closesAt, {
+        zone: this.config.timezone
+      }).toFormat('ccc LLL d HH:mm');
 
       return `Active poll (${active.weekKey})\nVoters: ${summary.uniqueVoterCount}/${this.config.requiredVoters}\nTop: ${topDescription}\nCloses: ${closesAtText}`;
     }
 
-    const tieDeadline = DateTime.fromMillis(active.tieDeadlineAt, { zone: this.config.timezone }).toFormat(
-      'ccc LLL d HH:mm'
-    );
+    const tieDeadline = DateTime.fromMillis(active.tieDeadlineAt, {
+      zone: this.config.timezone
+    }).toFormat('ccc LLL d HH:mm');
 
     return `Tie pending (${active.weekKey})\nTop: ${topDescription}\nManual pick deadline: ${tieDeadline}`;
   }
@@ -795,9 +874,14 @@ class GameSchedulerBot {
       return;
     }
 
-    const active = this.db.getActivePoll();
+    const active = this.db.getActivePoll(this.config.groupId);
     if (!active || active.status !== 'TIE_PENDING') {
       await this.sendGroupMessage('No tie is waiting for manual pick right now.');
+      return;
+    }
+
+    if (!/^\d+$/.test(String(optionRaw || ''))) {
+      await this.sendGroupMessage(`Usage: ${this.config.commandPrefix} pick <option_number>`);
       return;
     }
 
@@ -826,13 +910,20 @@ class GameSchedulerBot {
 
       const summary = this.summarizePoll(latest);
       const winnerVotes = summary.counts[optionIdx] || 0;
-      const announcementText = this.finalizeWinner(latest, optionIdx, winnerVotes, 'manual-override');
+      const announcementText = this.finalizeWinner(
+        latest,
+        optionIdx,
+        winnerVotes,
+        'manual-override'
+      );
 
       return { status: 'ok', announcementText };
     });
 
     if (lockResult === false) {
-      await this.sendGroupMessage('Another tie operation is in progress. Please retry in a moment.');
+      await this.sendGroupMessage(
+        'Another tie operation is in progress. Please retry in a moment.'
+      );
       return;
     }
 
@@ -868,6 +959,11 @@ class GameSchedulerBot {
  */
 async function main() {
   const config = loadConfig();
+  setLogOptions({
+    redactSensitive: config.logRedactSensitive,
+    includeStack: config.logIncludeStack
+  });
+
   const bot = new GameSchedulerBot(config);
   let shutdownPromise = null;
   let finalExitCode = 0;
@@ -884,11 +980,7 @@ async function main() {
     shutdownPromise = bot
       .shutdown(signal)
       .catch((error) => {
-        log('ERROR', 'Shutdown failure.', {
-          signal,
-          error: error?.message,
-          stack: error?.stack
-        });
+        log('ERROR', 'Shutdown failure.', errorMetadata(error, { signal }));
         finalExitCode = 1;
       })
       .finally(() => {
@@ -904,26 +996,32 @@ async function main() {
   }
 
   process.on('uncaughtException', (error) => {
-    log('ERROR', 'Uncaught exception.', {
-      error: error?.message,
-      stack: error?.stack
-    });
+    log('ERROR', 'Uncaught exception.', errorMetadata(error));
     beginShutdown('uncaughtException', 1);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    log('ERROR', 'Unhandled promise rejection.', {
+      reason: reason instanceof Error ? reason.message : String(reason)
+    });
+    beginShutdown('unhandledRejection', 1);
   });
 
   await bot.start();
 }
 
-process.on('unhandledRejection', (reason) => {
-  log('ERROR', 'Unhandled promise rejection.', {
-    reason: reason instanceof Error ? reason.message : String(reason)
+if (require.main === module) {
+  main().catch((error) => {
+    log('ERROR', 'Fatal startup error.', errorMetadata(error));
+    process.exit(1);
   });
-});
+}
 
-main().catch((error) => {
-  log('ERROR', 'Fatal startup error.', {
-    error: error?.message,
-    stack: error?.stack
-  });
-  process.exit(1);
-});
+module.exports = {
+  GameSchedulerBot,
+  extractParentMessageId,
+  getMessageSenderJid,
+  main,
+  serializeMessageId,
+  serializeMessageKey
+};
