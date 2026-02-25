@@ -1,6 +1,12 @@
 const path = require('node:path');
 const { DateTime } = require('luxon');
 
+/**
+ * Retrieve and validate a required environment variable.
+ * @param {string} name - Environment variable key to read.
+ * @returns {string} The environment variable's value, trimmed.
+ * @throws {Error} If the variable is missing or empty after trimming.
+ */
 function mustReadEnv(name) {
   const value = process.env[name];
   if (!value || !value.trim()) {
@@ -9,6 +15,13 @@ function mustReadEnv(name) {
   return value.trim();
 }
 
+/**
+ * Parse an environment variable as a base-10 integer or return a fallback.
+ * @param {string} name - Environment variable name to read.
+ * @param {number} [fallback] - Value to return when the environment variable is missing or empty.
+ * @returns {number} The parsed integer value from the environment variable, or the provided fallback.
+ * @throws {Error} If the environment variable is present but cannot be parsed as a finite integer.
+ */
 function parseInteger(name, fallback) {
   const raw = process.env[name];
   if (!raw || !raw.trim()) {
@@ -23,6 +36,13 @@ function parseInteger(name, fallback) {
   return value;
 }
 
+/**
+ * Determine whether an environment variable represents a boolean-like value.
+ * @param {string} name - Environment variable name to read.
+ * @param {boolean} fallback - Value to return when the variable is missing or empty.
+ * @returns {boolean} `true` if the variable equals `1`, `true`, `yes`, or `on`; `false` if it equals `0`, `false`, `no`, or `off`.
+ * @throws {Error} If the variable is present but not a recognized boolean-like string.
+ */
 function parseBoolean(name, fallback) {
   const raw = process.env[name];
   if (!raw || !raw.trim()) {
@@ -40,6 +60,16 @@ function parseBoolean(name, fallback) {
   throw new Error(`Environment variable ${name} must be a boolean-like value.`);
 }
 
+/**
+ * Normalize a phone number or JID into a WhatsApp contact JID.
+ *
+ * Trims and lowercases the input, extracts the local part (text before `@` if present),
+ * and converts phone-like locals to digits only. Produces a JID using the `@c.us` domain.
+ *
+ * @param {string} input - Phone number or JID to normalize; may contain punctuation or a domain.
+ * @returns {string} The normalized JID in the form `<local>@c.us`.
+ * @throws {Error} If `input` is empty or does not yield a valid local part after normalization.
+ */
 function normalizeJid(input) {
   if (!input || !input.trim()) {
     throw new Error('Cannot normalize an empty phone/JID value.');
@@ -58,6 +88,14 @@ function normalizeJid(input) {
   return `${normalizedLocal}@c.us`;
 }
 
+/**
+ * Parse a comma-separated list of JIDs or phone identifiers into a deduplicated array of normalized JIDs.
+ *
+ * @param {string} rawList - Comma-separated values representing JIDs or phone numbers.
+ * @returns {string[]} Array of unique, normalized JIDs (each formatted like `<local>@c.us`).
+ * @throws {Error} If the parsed list is empty.
+ * @throws {Error} If duplicate values exist after normalization.
+ */
 function parseVoterList(rawList) {
   const voters = rawList
     .split(',')
@@ -77,6 +115,11 @@ function parseVoterList(rawList) {
   return unique;
 }
 
+/**
+ * Validate that a timezone identifier is valid and supported.
+ * @param {string} timezone - Timezone identifier to validate (e.g., "Europe/Istanbul").
+ * @throws {Error} If `timezone` is not a valid/recognized timezone identifier.
+ */
 function validateTimezone(timezone) {
   const candidate = DateTime.now().setZone(timezone);
   if (!candidate.isValid) {
@@ -84,6 +127,28 @@ function validateTimezone(timezone) {
   }
 }
 
+/**
+ * Load and validate runtime configuration from environment variables.
+ *
+ * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
+ * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
+ *
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string}} Configuration object containing validated and derived settings:
+ * - `groupId`: WhatsApp group JID ending with `@g.us`.
+ * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
+ * - `allowedVoters`: Array of normalized voter JIDs.
+ * - `allowedVoterSet`: Set of normalized voter JIDs.
+ * - `requiredVoters`: Minimum required voters (>= 1 and <= allowedVoters.length).
+ * - `timezone`: Valid IANA timezone string.
+ * - `pollCloseHours`: Hours until poll closes (>= 1).
+ * - `tieOverrideHours`: Hours after which a tie can be overridden (>= 1).
+ * - `pollCron`: Cron expression for scheduled polls.
+ * - `pollQuestion`: Default poll question text.
+ * - `clientId`: Identifier for the client.
+ * - `dataDir`: Absolute path to the data directory.
+ * - `headless`: Whether client runs headless (`true` or `false`).
+ * - `commandPrefix`: Prefix for commands.
+ */
 function loadConfig() {
   const groupId = mustReadEnv('GROUP_ID');
   if (!groupId.endsWith('@g.us')) {
