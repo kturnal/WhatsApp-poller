@@ -17,7 +17,7 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
   - If no manual pick, earliest tied slot is auto-selected
 
 ## Requirements
-- Node.js 22+
+- Node.js 18+
 - A WhatsApp account session (scan QR on first run)
 
 ## Setup
@@ -43,4 +43,4 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 ## Notes
 - Session and SQLite data are stored under `data/`.
-- This project uses Node's built-in `node:sqlite` module (Node 22+).
+- SQLite storage is powered by `better-sqlite3`.

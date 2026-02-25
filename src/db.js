@@ -1,14 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 
 class PollDatabase {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA foreign_keys = ON;');
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
     this.#initSchema();
   }
 
@@ -48,6 +48,16 @@ class PollDatabase {
     `);
   }
 
+  #parseJsonField(raw, fieldName, rowIdentifier) {
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Failed to parse ${fieldName} for ${rowIdentifier}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   #mapPoll(row) {
     if (!row) {
       return null;
@@ -59,14 +69,16 @@ class PollDatabase {
       weekKey: row.week_key,
       pollMessageId: row.poll_message_id,
       question: row.question,
-      options: JSON.parse(row.options_json),
+      options: this.#parseJsonField(row.options_json, 'options_json', `poll id=${row.id}`),
       status: row.status,
       createdAt: row.created_at,
       closesAt: row.closes_at,
       closedAt: row.closed_at,
       closeReason: row.close_reason,
       tieDeadlineAt: row.tie_deadline_at,
-      tieOptionIndices: row.tie_option_indices_json ? JSON.parse(row.tie_option_indices_json) : [],
+      tieOptionIndices: row.tie_option_indices_json
+        ? this.#parseJsonField(row.tie_option_indices_json, 'tie_option_indices_json', `poll id=${row.id}`)
+        : [],
       winningOptionIdx: row.winning_option_idx,
       winnerVoteCount: row.winner_vote_count,
       announcedAt: row.announced_at
@@ -77,7 +89,11 @@ class PollDatabase {
     return {
       pollId: row.poll_id,
       voterJid: row.voter_jid,
-      selectedOptions: JSON.parse(row.selected_options_json),
+      selectedOptions: this.#parseJsonField(
+        row.selected_options_json,
+        'selected_options_json',
+        `vote poll_id=${row.poll_id}, voter_jid=${row.voter_jid}`
+      ),
       updatedAt: row.updated_at
     };
   }
@@ -202,12 +218,12 @@ class PollDatabase {
     );
   }
 
-  setAnnounced({ pollId, closeReason, closedAt, announcedAt, winnerIdx, winnerVotes }) {
+  setAnnounced({ pollId, closeReason, closedAt = null, announcedAt, winnerIdx, winnerVotes }) {
     const stmt = this.db.prepare(`
       UPDATE polls
       SET
         status = 'ANNOUNCED',
-        closed_at = ?,
+        closed_at = COALESCE(closed_at, ?),
         close_reason = ?,
         tie_deadline_at = NULL,
         tie_option_indices_json = NULL,

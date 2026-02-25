@@ -46,17 +46,16 @@ function normalizeJid(input) {
   }
 
   const value = input.trim().toLowerCase();
+  const localPart = value.includes('@') ? value.split('@', 1)[0] : value;
+  const digits = localPart.replace(/[^\d]/g, '');
+  const isPhoneLike = /^[+\d().\-\s]+$/.test(localPart);
+  const normalizedLocal = isPhoneLike ? digits : localPart;
 
-  if (value.includes('@')) {
-    return value;
+  if (!normalizedLocal) {
+    throw new Error(`Invalid phone/JID value: ${input}`);
   }
 
-  const digits = value.replace(/[^\d]/g, '');
-  if (!digits) {
-    throw new Error(`Invalid phone value: ${input}`);
-  }
-
-  return `${digits}@c.us`;
+  return `${normalizedLocal}@c.us`;
 }
 
 function parseVoterList(rawList) {
@@ -102,7 +101,8 @@ function loadConfig() {
     throw new Error('REQUIRED_VOTERS cannot be greater than ALLOWED_VOTERS count.');
   }
 
-  const timezone = process.env.TIMEZONE?.trim() || 'Europe/Istanbul';
+  const inferredTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timezone = process.env.TIMEZONE?.trim() || inferredTimezone || 'Europe/Istanbul';
   validateTimezone(timezone);
 
   const pollCloseHours = parseInteger('POLL_CLOSE_HOURS', 48);
@@ -117,8 +117,7 @@ function loadConfig() {
 
   const pollCron = process.env.POLL_CRON?.trim() || '0 12 * * 1';
   const pollQuestion =
-    process.env.POLL_QUESTION?.trim() ||
-    'Weekly game night - pick all slots you can join (Europe/Istanbul)';
+    process.env.POLL_QUESTION?.trim() || `Weekly game night - pick all slots you can join (${timezone})`;
 
   const clientId = process.env.CLIENT_ID?.trim() || 'game-scheduler';
   const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR?.trim() || 'data');

@@ -15,6 +15,8 @@ const {
   scheduledWeeklyRunForWeek
 } = require('./poll-slots');
 
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
 function log(level, message, metadata = null) {
   const timestamp = DateTime.now().toISO();
   const prefix = `[${timestamp}] [${level}] ${message}`;
@@ -161,13 +163,14 @@ class GameSchedulerBot {
 
   async withPollLock(pollId, callback) {
     if (this.pollLocks.has(pollId)) {
-      return;
+      return false;
     }
 
     this.pollLocks.add(pollId);
 
     try {
       await callback();
+      return true;
     } finally {
       this.pollLocks.delete(pollId);
     }
@@ -306,39 +309,61 @@ class GameSchedulerBot {
 
     const options = buildOptionsForWeek(this.config.timezone, weekYear, weekNumber);
     const optionLabels = options.map((option) => option.label);
+    let pollMessageId = null;
 
-    const chat = await this.client.getChatById(this.config.groupId);
-    const sentMessage = await chat.sendMessage(
-      new Poll(this.config.pollQuestion, optionLabels, { allowMultipleAnswers: true })
-    );
+    try {
+      const chat = await this.client.getChatById(this.config.groupId);
+      const sentMessage = await chat.sendMessage(
+        new Poll(this.config.pollQuestion, optionLabels, { allowMultipleAnswers: true })
+      );
 
-    const pollMessageId = serializeMessageId(sentMessage);
-    if (!pollMessageId) {
-      throw new Error('Could not serialize poll message id from sent message.');
+      pollMessageId = serializeMessageId(sentMessage);
+      if (!pollMessageId) {
+        throw new Error('Could not serialize poll message id from sent message.');
+      }
+
+      const optionsWithLocalIds = options.map((option, index) => {
+        const sentOptionLocalId = sentMessage?.pollOptions?.[index]?.localId;
+        return {
+          ...option,
+          localId: String(sentOptionLocalId ?? option.index ?? index)
+        };
+      });
+
+      const createdAt = now.toMillis();
+      const closesAt = createdAt + this.config.pollCloseHours * 60 * 60 * 1000;
+
+      const pollId = this.db.createPoll({
+        groupId: this.config.groupId,
+        weekKey,
+        pollMessageId,
+        question: this.config.pollQuestion,
+        options: optionsWithLocalIds,
+        createdAt,
+        closesAt
+      });
+
+      this.scheduleCloseTimer(pollId, closesAt);
+
+      log('INFO', 'Weekly poll created.', {
+        pollId,
+        pollMessageId,
+        weekKey,
+        closesAt,
+        trigger
+      });
+    } catch (error) {
+      if (pollMessageId) {
+        log('ERROR', 'Poll was sent but failed to persist in SQLite.', {
+          weekKey,
+          pollMessageId,
+          trigger,
+          error: error?.message,
+          stack: error?.stack
+        });
+      }
+      throw error;
     }
-
-    const createdAt = now.toMillis();
-    const closesAt = createdAt + this.config.pollCloseHours * 60 * 60 * 1000;
-
-    const pollId = this.db.createPoll({
-      groupId: this.config.groupId,
-      weekKey,
-      pollMessageId,
-      question: this.config.pollQuestion,
-      options,
-      createdAt,
-      closesAt
-    });
-
-    this.scheduleCloseTimer(pollId, closesAt);
-
-    log('INFO', 'Weekly poll created.', {
-      pollId,
-      pollMessageId,
-      weekKey,
-      closesAt,
-      trigger
-    });
   }
 
   scheduleCloseTimer(pollId, closesAt) {
@@ -353,11 +378,18 @@ class GameSchedulerBot {
       return;
     }
 
+    const timeoutDelay = Math.min(delay, MAX_TIMEOUT_MS);
     const timeout = setTimeout(() => {
+      const remaining = closesAt - Date.now();
+      if (remaining > 0) {
+        this.scheduleCloseTimer(pollId, closesAt);
+        return;
+      }
+
       this.#safeRun('close_timer', async () => {
         await this.closePoll(pollId, 'deadline');
       });
-    }, delay);
+    }, timeoutDelay);
 
     this.closeTimers.set(pollId, timeout);
   }
@@ -462,14 +494,40 @@ class GameSchedulerBot {
       return;
     }
 
+    const discardedLocalIds = [];
     const selectedOptions = Array.from(
       new Set(
         (voteUpdate.selectedOptions || [])
-          .map((option) => Number(option.localId))
-          .filter((value) => Number.isInteger(value))
-          .filter((value) => value >= 0 && value < poll.options.length)
+          .map((selection) => {
+            const selectedLocalId = selection?.localId;
+            if (selectedLocalId === undefined || selectedLocalId === null) {
+              discardedLocalIds.push(null);
+              return -1;
+            }
+
+            const selectedLocalIdText = String(selectedLocalId);
+            const optionIndex = poll.options.findIndex((option, index) => {
+              const optionLocalId = option?.localId ?? option?.index ?? index;
+              return String(optionLocalId) === selectedLocalIdText;
+            });
+
+            if (optionIndex === -1) {
+              discardedLocalIds.push(selectedLocalIdText);
+            }
+
+            return optionIndex;
+          })
+          .filter((value) => value >= 0)
       )
     ).sort((a, b) => a - b);
+
+    if (discardedLocalIds.length > 0) {
+      log('WARN', 'Discarded unmatched vote selection localIds.', {
+        pollId: poll.id,
+        voterJid,
+        discardedLocalIds
+      });
+    }
 
     this.db.upsertVote({
       pollId: poll.id,
@@ -567,7 +625,7 @@ class GameSchedulerBot {
     this.db.setAnnounced({
       pollId: poll.id,
       closeReason,
-      closedAt: timestamp,
+      closedAt: poll.closedAt || timestamp,
       announcedAt: timestamp,
       winnerIdx,
       winnerVotes
@@ -676,10 +734,6 @@ class GameSchedulerBot {
   }
 
   isOwnerMessage(message) {
-    if (message.fromMe) {
-      return true;
-    }
-
     const senderJid = getMessageSenderJid(message);
     return senderJid === this.config.ownerJid;
   }
@@ -704,7 +758,7 @@ class GameSchedulerBot {
 
     const optionIdx = optionNumber - 1;
 
-    await this.withPollLock(active.id, async () => {
+    const executed = await this.withPollLock(active.id, async () => {
       const latest = this.db.getPollById(active.id);
       if (!latest || latest.status !== 'TIE_PENDING') {
         await this.sendGroupMessage('No tie is waiting for manual pick right now.');
@@ -724,6 +778,10 @@ class GameSchedulerBot {
 
       await this.announceWinner(latest, optionIdx, winnerVotes, 'manual-override');
     });
+
+    if (!executed) {
+      await this.sendGroupMessage('Another tie operation is in progress. Please retry in a moment.');
+    }
   }
 
   async sendGroupMessage(text) {
@@ -735,24 +793,47 @@ class GameSchedulerBot {
 async function main() {
   const config = loadConfig();
   const bot = new GameSchedulerBot(config);
+  let shutdownPromise = null;
+  let finalExitCode = 0;
+
+  const beginShutdown = (signal, requestedExitCode) => {
+    if (shutdownPromise) {
+      if (requestedExitCode > finalExitCode) {
+        finalExitCode = requestedExitCode;
+      }
+      return;
+    }
+
+    finalExitCode = requestedExitCode;
+    shutdownPromise = bot
+      .shutdown(signal)
+      .catch((error) => {
+        log('ERROR', 'Shutdown failure.', {
+          signal,
+          error: error?.message,
+          stack: error?.stack
+        });
+        finalExitCode = 1;
+      })
+      .finally(() => {
+        process.exit(finalExitCode);
+      });
+  };
 
   const shutdownSignals = ['SIGINT', 'SIGTERM'];
   for (const signal of shutdownSignals) {
     process.on(signal, () => {
-      bot
-        .shutdown(signal)
-        .catch((error) => {
-          log('ERROR', 'Shutdown failure.', {
-            signal,
-            error: error?.message,
-            stack: error?.stack
-          });
-        })
-        .finally(() => {
-          process.exit(0);
-        });
+      beginShutdown(signal, 0);
     });
   }
+
+  process.on('uncaughtException', (error) => {
+    log('ERROR', 'Uncaught exception.', {
+      error: error?.message,
+      stack: error?.stack
+    });
+    beginShutdown('uncaughtException', 1);
+  });
 
   await bot.start();
 }
@@ -761,14 +842,6 @@ process.on('unhandledRejection', (reason) => {
   log('ERROR', 'Unhandled promise rejection.', {
     reason: reason instanceof Error ? reason.message : String(reason)
   });
-});
-
-process.on('uncaughtException', (error) => {
-  log('ERROR', 'Uncaught exception.', {
-    error: error?.message,
-    stack: error?.stack
-  });
-  process.exit(1);
 });
 
 main().catch((error) => {
