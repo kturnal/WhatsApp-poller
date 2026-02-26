@@ -2,6 +2,25 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 
+const POLLS_COLUMNS = `
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  week_key TEXT NOT NULL,
+  poll_message_id TEXT NOT NULL,
+  question TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  closes_at INTEGER NOT NULL,
+  closed_at INTEGER,
+  close_reason TEXT,
+  tie_deadline_at INTEGER,
+  tie_option_indices_json TEXT,
+  winning_option_idx INTEGER,
+  winner_vote_count INTEGER,
+  announced_at INTEGER
+`;
+
 class PollDatabase {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -12,28 +31,17 @@ class PollDatabase {
     this.#initSchema();
   }
 
-  #initSchema() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS polls (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id TEXT NOT NULL,
-        week_key TEXT NOT NULL UNIQUE,
-        poll_message_id TEXT NOT NULL UNIQUE,
-        question TEXT NOT NULL,
-        options_json TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        closes_at INTEGER NOT NULL,
-        closed_at INTEGER,
-        close_reason TEXT,
-        tie_deadline_at INTEGER,
-        tie_option_indices_json TEXT,
-        winning_option_idx INTEGER,
-        winner_vote_count INTEGER,
-        announced_at INTEGER
+  #pollTableSql(tableName = 'polls') {
+    return `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        ${POLLS_COLUMNS}
       );
+    `;
+  }
 
-      CREATE TABLE IF NOT EXISTS poll_votes (
+  #pollVotesTableSql(tableName = 'poll_votes') {
+    return `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
         poll_id INTEGER NOT NULL,
         voter_jid TEXT NOT NULL,
         selected_options_json TEXT NOT NULL,
@@ -41,11 +49,150 @@ class PollDatabase {
         PRIMARY KEY (poll_id, voter_jid),
         FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE
       );
+    `;
+  }
 
-      CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status);
-      CREATE INDEX IF NOT EXISTS idx_polls_closes_at ON polls(closes_at);
-      CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_id ON poll_votes(poll_id);
+  #createIndexes() {
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_polls_group_week_unique
+        ON polls(group_id, week_key);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_polls_group_message_unique
+        ON polls(group_id, poll_message_id);
+      CREATE INDEX IF NOT EXISTS idx_polls_group_status
+        ON polls(group_id, status);
+      CREATE INDEX IF NOT EXISTS idx_polls_group_closes_at
+        ON polls(group_id, closes_at);
+      CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_id
+        ON poll_votes(poll_id);
     `);
+  }
+
+  #tableExists(name) {
+    const stmt = this.db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1`
+    );
+    return Boolean(stmt.get(name));
+  }
+
+  #isLegacyUniqueIndex(columns) {
+    return (
+      (columns.length === 1 && columns[0] === 'week_key') ||
+      (columns.length === 1 && columns[0] === 'poll_message_id')
+    );
+  }
+
+  #needsGroupScopedMigration() {
+    if (!this.#tableExists('polls')) {
+      return false;
+    }
+
+    const indexes = this.db.prepare("PRAGMA index_list('polls')").all();
+    for (const index of indexes) {
+      if (!index.unique) {
+        continue;
+      }
+
+      const indexName = index.name.replace(/'/g, "''");
+      const columns = this.db
+        .prepare(`PRAGMA index_info('${indexName}')`)
+        .all()
+        .map((row) => row.name);
+
+      if (this.#isLegacyUniqueIndex(columns)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  #migrateToGroupScopedUniqueness() {
+    this.db.exec('PRAGMA foreign_keys = OFF');
+    this.db.exec('BEGIN IMMEDIATE');
+
+    try {
+      this.db.exec(`
+        ALTER TABLE polls RENAME TO polls_legacy;
+        ALTER TABLE poll_votes RENAME TO poll_votes_legacy;
+
+        ${this.#pollTableSql('polls')}
+        ${this.#pollVotesTableSql('poll_votes')}
+
+        INSERT INTO polls (
+          id,
+          group_id,
+          week_key,
+          poll_message_id,
+          question,
+          options_json,
+          status,
+          created_at,
+          closes_at,
+          closed_at,
+          close_reason,
+          tie_deadline_at,
+          tie_option_indices_json,
+          winning_option_idx,
+          winner_vote_count,
+          announced_at
+        )
+        SELECT
+          id,
+          group_id,
+          week_key,
+          poll_message_id,
+          question,
+          options_json,
+          status,
+          created_at,
+          closes_at,
+          closed_at,
+          close_reason,
+          tie_deadline_at,
+          tie_option_indices_json,
+          winning_option_idx,
+          winner_vote_count,
+          announced_at
+        FROM polls_legacy;
+
+        INSERT INTO poll_votes (poll_id, voter_jid, selected_options_json, updated_at)
+        SELECT poll_id, voter_jid, selected_options_json, updated_at
+        FROM poll_votes_legacy;
+
+        DROP TABLE poll_votes_legacy;
+        DROP TABLE polls_legacy;
+      `);
+
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Ignore rollback errors and rethrow original migration failure below.
+      }
+      throw error;
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  #initSchema() {
+    if (!this.#tableExists('polls')) {
+      this.db.exec(this.#pollTableSql('polls'));
+      this.db.exec(this.#pollVotesTableSql('poll_votes'));
+      this.#createIndexes();
+      return;
+    }
+
+    if (!this.#tableExists('poll_votes')) {
+      this.db.exec(this.#pollVotesTableSql('poll_votes'));
+    }
+
+    if (this.#needsGroupScopedMigration()) {
+      this.#migrateToGroupScopedUniqueness();
+    }
+
+    this.#createIndexes();
   }
 
   #parseJsonField(raw, fieldName, rowIdentifier) {
@@ -53,7 +200,9 @@ class PollDatabase {
       return JSON.parse(raw);
     } catch (error) {
       throw new Error(
-        `Failed to parse ${fieldName} for ${rowIdentifier}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to parse ${fieldName} for ${rowIdentifier}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
     }
   }
@@ -77,7 +226,11 @@ class PollDatabase {
       closeReason: row.close_reason,
       tieDeadlineAt: row.tie_deadline_at,
       tieOptionIndices: row.tie_option_indices_json
-        ? this.#parseJsonField(row.tie_option_indices_json, 'tie_option_indices_json', `poll id=${row.id}`)
+        ? this.#parseJsonField(
+            row.tie_option_indices_json,
+            'tie_option_indices_json',
+            `poll id=${row.id}`
+          )
         : [],
       winningOptionIdx: row.winning_option_idx,
       winnerVoteCount: row.winner_vote_count,
@@ -98,15 +251,7 @@ class PollDatabase {
     };
   }
 
-  createPoll({
-    groupId,
-    weekKey,
-    pollMessageId,
-    question,
-    options,
-    createdAt,
-    closesAt
-  }) {
+  createPoll({ groupId, weekKey, pollMessageId, question, options, createdAt, closesAt }) {
     const stmt = this.db.prepare(`
       INSERT INTO polls (
         group_id,
@@ -138,42 +283,48 @@ class PollDatabase {
     return this.#mapPoll(stmt.get(pollId));
   }
 
-  getPollByWeekKey(weekKey) {
-    const stmt = this.db.prepare('SELECT * FROM polls WHERE week_key = ? LIMIT 1');
-    return this.#mapPoll(stmt.get(weekKey));
+  getPollByWeekKey(groupId, weekKey) {
+    const stmt = this.db.prepare('SELECT * FROM polls WHERE group_id = ? AND week_key = ? LIMIT 1');
+    return this.#mapPoll(stmt.get(groupId, weekKey));
   }
 
-  getPollByMessageId(messageId) {
-    const stmt = this.db.prepare('SELECT * FROM polls WHERE poll_message_id = ? LIMIT 1');
-    return this.#mapPoll(stmt.get(messageId));
+  getPollByMessageId(groupId, messageId) {
+    const stmt = this.db.prepare(
+      'SELECT * FROM polls WHERE group_id = ? AND poll_message_id = ? LIMIT 1'
+    );
+    return this.#mapPoll(stmt.get(groupId, messageId));
   }
 
-  getActivePoll() {
+  getActivePoll(groupId) {
     const stmt = this.db.prepare(`
       SELECT *
       FROM polls
-      WHERE status IN ('OPEN', 'TIE_PENDING')
+      WHERE group_id = ?
+        AND status IN ('OPEN', 'TIE_PENDING')
       ORDER BY created_at DESC
       LIMIT 1
     `);
 
-    return this.#mapPoll(stmt.get());
+    return this.#mapPoll(stmt.get(groupId));
   }
 
-  getLatestPoll() {
-    const stmt = this.db.prepare('SELECT * FROM polls ORDER BY created_at DESC LIMIT 1');
-    return this.#mapPoll(stmt.get());
+  getLatestPoll(groupId) {
+    const stmt = this.db.prepare(
+      'SELECT * FROM polls WHERE group_id = ? ORDER BY created_at DESC LIMIT 1'
+    );
+    return this.#mapPoll(stmt.get(groupId));
   }
 
-  listRecoverablePolls() {
+  listRecoverablePolls(groupId) {
     const stmt = this.db.prepare(`
       SELECT *
       FROM polls
-      WHERE status IN ('OPEN', 'TIE_PENDING')
+      WHERE group_id = ?
+        AND status IN ('OPEN', 'TIE_PENDING')
       ORDER BY created_at ASC
     `);
 
-    return stmt.all().map((row) => this.#mapPoll(row));
+    return stmt.all(groupId).map((row) => this.#mapPoll(row));
   }
 
   upsertVote({ pollId, voterJid, selectedOptions, updatedAt }) {
@@ -209,13 +360,7 @@ class PollDatabase {
       WHERE id = ?
     `);
 
-    stmt.run(
-      closedAt,
-      closeReason,
-      tieDeadlineAt,
-      JSON.stringify(tieOptionIndices),
-      pollId
-    );
+    stmt.run(closedAt, closeReason, tieDeadlineAt, JSON.stringify(tieOptionIndices), pollId);
   }
 
   setAnnounced({ pollId, closeReason, closedAt = null, announcedAt, winnerIdx, winnerVotes }) {
