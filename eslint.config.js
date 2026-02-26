@@ -3,7 +3,7 @@ const globals = require('globals');
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'data/**', 'coverage/**'],
+    ignores: ['node_modules/**', 'data/**', 'coverage/**']
   },
   {
     files: ['**/*.js'],
@@ -12,13 +12,13 @@ module.exports = [
       sourceType: 'commonjs',
       globals: {
         ...globals.es2022,
-        ...globals.node,
-      },
+        ...globals.node
+      }
     },
     rules: {
       ...js.configs.recommended.rules,
       'no-console': 'off',
-      'preserve-caught-error': 'off',
-    },
-  },
+      'preserve-caught-error': 'off'
+    }
+  }
 ];
