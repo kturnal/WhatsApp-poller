@@ -37,6 +37,7 @@ class FakeClient extends EventEmitter {
     this.chat = chat;
     this.initialized = false;
     this.destroyed = false;
+    this.pollVotesByMessageId = new Map();
   }
 
   async initialize() {
@@ -53,6 +54,10 @@ class FakeClient extends EventEmitter {
     }
 
     return this.chat;
+  }
+
+  async getPollVotes(messageId) {
+    return this.pollVotesByMessageId.get(messageId) || [];
   }
 }
 
@@ -253,6 +258,83 @@ test('restart with persistent data closes poll on deadline and announces winner'
   assert.equal(latest.closeReason, 'deadline');
   assert.equal(latest.winningOptionIdx, 0);
   assert.equal(latest.winnerVoteCount, 1);
+
+  const textMessages = chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('restart reconciliation backfills missed votes before quorum closure', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-reconcile-test-'));
+  const chat = new FakeChat();
+  const managedBots = new Set();
+
+  t.after(async () => {
+    for (const bot of managedBots) {
+      await bot.shutdown('test');
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const firstConfig = createConfig(dataDir, {
+    requiredVoters: 2,
+    pollCloseHours: 24
+  });
+
+  const first = createBotInstance(firstConfig, {
+    chat
+  });
+  managedBots.add(first.bot);
+
+  await first.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = first.bot.db.getActivePoll(firstConfig.groupId);
+  assert.ok(activePoll);
+
+  await first.bot.shutdown('test');
+  managedBots.delete(first.bot);
+
+  const secondConfig = createConfig(dataDir, {
+    requiredVoters: 2,
+    pollCloseHours: 24
+  });
+
+  const second = createBotInstance(secondConfig, {
+    chat
+  });
+  managedBots.add(second.bot);
+
+  second.client.pollVotesByMessageId.set(activePoll.pollMessageId, [
+    {
+      voter: '905551111111',
+      selectedOptions: [{ localId: 'opt-1' }]
+    },
+    {
+      voter: '905551111111',
+      selectedOptions: [{ localId: 'opt-0' }]
+    },
+    {
+      voter: '905552222222',
+      selectedOptions: [{ localId: 'opt-0' }]
+    },
+    {
+      voter: '905559999999',
+      selectedOptions: [{ localId: 'opt-0' }]
+    }
+  ]);
+
+  await second.bot.reconcilePendingPollVotes();
+  second.bot.recoverPendingPolls();
+
+  const latest = second.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.closeReason, 'quorum');
+  assert.equal(latest.winningOptionIdx, 0);
+  assert.equal(latest.winnerVoteCount, 2);
+
+  const votes = second.bot.db.getVotesByPollId(activePoll.id);
+  assert.equal(votes.length, 2);
+
+  const firstVoterVote = votes.find((vote) => vote.voterJid === '905551111111@c.us');
+  assert.deepEqual(firstVoterVote.selectedOptions, [0]);
 
   const textMessages = chat.messages.filter((message) => typeof message === 'string');
   assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
