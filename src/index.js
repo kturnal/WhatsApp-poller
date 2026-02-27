@@ -18,6 +18,11 @@ const { enforceSecureRuntimePermissions } = require('./runtime-security');
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_COMMAND_TOKENS = 6;
+const OUTBOX_BATCH_SIZE = 20;
+const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
+const DEFAULT_OUTBOX_RETRY_BASE_MS = 30 * 1000;
+const DEFAULT_OUTBOX_RETRY_MAX_MS = 30 * 60 * 1000;
+const DEFAULT_OUTBOX_SEND_TIMEOUT_MS = 30 * 1000;
 
 /**
  * Extracts a normalized message identifier from a message object.
@@ -107,6 +112,22 @@ class GameSchedulerBot {
   constructor(config, dependencies = {}) {
     this.config = config;
     this.now = dependencies.now || (() => Date.now());
+    this.outboxMaxAttempts =
+      Number.isInteger(dependencies.outboxMaxAttempts) && dependencies.outboxMaxAttempts > 0
+        ? dependencies.outboxMaxAttempts
+        : DEFAULT_OUTBOX_MAX_ATTEMPTS;
+    this.outboxRetryBaseMs =
+      Number.isInteger(dependencies.outboxRetryBaseMs) && dependencies.outboxRetryBaseMs > 0
+        ? dependencies.outboxRetryBaseMs
+        : DEFAULT_OUTBOX_RETRY_BASE_MS;
+    this.outboxRetryMaxMs =
+      Number.isInteger(dependencies.outboxRetryMaxMs) && dependencies.outboxRetryMaxMs > 0
+        ? dependencies.outboxRetryMaxMs
+        : DEFAULT_OUTBOX_RETRY_MAX_MS;
+    this.outboxSendTimeoutMs =
+      Number.isInteger(dependencies.outboxSendTimeoutMs) && dependencies.outboxSendTimeoutMs > 0
+        ? dependencies.outboxSendTimeoutMs
+        : DEFAULT_OUTBOX_SEND_TIMEOUT_MS;
 
     setLogOptions({
       redactSensitive: this.config.logRedactSensitive,
@@ -121,6 +142,8 @@ class GameSchedulerBot {
     this.tieTimers = new Map();
     this.pollLocks = new Set();
     this.commandWindows = new Map();
+    this.outboxTimer = null;
+    this.outboxDrainInProgress = false;
 
     this.clientFactory =
       dependencies.clientFactory ||
@@ -265,6 +288,7 @@ class GameSchedulerBot {
 
     this.closeTimers.clear();
     this.tieTimers.clear();
+    this.clearOutboxTimer();
 
     if (this.db && typeof this.db.close === 'function') {
       try {
@@ -289,6 +313,7 @@ class GameSchedulerBot {
     this.startCronIfNeeded();
     await this.reconcilePendingPollVotes();
     this.recoverPendingPolls();
+    await this.recoverOutboxMessages();
     await this.createCurrentWeekPollIfMissed();
   }
 
@@ -607,6 +632,175 @@ class GameSchedulerBot {
     }
   }
 
+  buildOutboxTextMessage(text, createdAt = this.now()) {
+    return {
+      groupId: this.config.groupId,
+      payload: {
+        kind: 'group-text',
+        text
+      },
+      status: 'PENDING',
+      attemptCount: 0,
+      maxAttempts: this.outboxMaxAttempts,
+      createdAt,
+      nextRetryAt: createdAt,
+      lastError: null
+    };
+  }
+
+  getOutboxRetryDelayMs(attemptCount) {
+    const growth = 2 ** Math.max(0, attemptCount - 1);
+    return Math.min(this.outboxRetryBaseMs * growth, this.outboxRetryMaxMs);
+  }
+
+  clearOutboxTimer() {
+    if (!this.outboxTimer) {
+      return;
+    }
+
+    clearTimeout(this.outboxTimer);
+    this.outboxTimer = null;
+  }
+
+  scheduleOutboxDrain(nextRetryAt) {
+    this.clearOutboxTimer();
+
+    const delay = nextRetryAt - this.now();
+    if (delay <= 0) {
+      this.#safeRun('outbox_drain_immediate', async () => {
+        await this.drainOutboxQueue();
+      });
+      return;
+    }
+
+    const timeoutDelay = Math.min(delay, MAX_TIMEOUT_MS);
+    this.outboxTimer = setTimeout(() => {
+      const remaining = nextRetryAt - this.now();
+      if (remaining > 0) {
+        this.scheduleOutboxDrain(nextRetryAt);
+        return;
+      }
+
+      this.#safeRun('outbox_drain', async () => {
+        await this.drainOutboxQueue();
+      });
+    }, timeoutDelay);
+  }
+
+  refreshOutboxSchedule() {
+    const nextRetryAt = this.db.getNextOutboxRetryAt(this.config.groupId);
+    if (nextRetryAt === null) {
+      this.clearOutboxTimer();
+      return;
+    }
+
+    this.scheduleOutboxDrain(nextRetryAt);
+  }
+
+  async recoverOutboxMessages() {
+    const retryableCount = this.db.countRetryableOutboxMessages(this.config.groupId);
+    if (retryableCount <= 0) {
+      return;
+    }
+
+    log('INFO', 'Recovering pending outbox messages from SQLite.', {
+      count: retryableCount
+    });
+
+    await this.drainOutboxQueue();
+  }
+
+  async sendOutboxPayload(payload) {
+    if (!payload || payload.kind !== 'group-text' || typeof payload.text !== 'string') {
+      throw new Error('Unsupported outbox payload.');
+    }
+
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`Outbox payload send timed out after ${this.outboxSendTimeoutMs}ms.`));
+      }, this.outboxSendTimeoutMs);
+    });
+
+    try {
+      await Promise.race([this.sendGroupMessage(payload.text), timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async deliverOutboxMessage(outboxMessage) {
+    const startedAt = this.now();
+
+    try {
+      await this.sendOutboxPayload(outboxMessage.payload);
+      this.db.markOutboxSent({
+        outboxId: outboxMessage.id,
+        sentAt: this.now()
+      });
+
+      log('INFO', 'Outbox message delivered.', {
+        outboxId: outboxMessage.id,
+        attempts: outboxMessage.attemptCount + 1
+      });
+    } catch (error) {
+      const attemptCount = outboxMessage.attemptCount + 1;
+      const exhausted = attemptCount >= outboxMessage.maxAttempts;
+      const retryDelayMs = this.getOutboxRetryDelayMs(attemptCount);
+      const nextRetryAt = exhausted ? startedAt : startedAt + retryDelayMs;
+
+      this.db.markOutboxFailed({
+        outboxId: outboxMessage.id,
+        attemptCount,
+        nextRetryAt,
+        lastError: error instanceof Error ? error.message : String(error)
+      });
+
+      const level = exhausted ? 'ERROR' : 'WARN';
+      const message = exhausted
+        ? 'Outbox delivery exhausted max attempts.'
+        : 'Outbox delivery failed; retry scheduled.';
+      log(
+        level,
+        message,
+        errorMetadata(error, {
+          outboxId: outboxMessage.id,
+          attemptCount,
+          maxAttempts: outboxMessage.maxAttempts,
+          nextRetryAt: exhausted ? null : nextRetryAt
+        })
+      );
+    }
+  }
+
+  async drainOutboxQueue() {
+    if (this.outboxDrainInProgress) {
+      return;
+    }
+
+    this.outboxDrainInProgress = true;
+
+    try {
+      while (true) {
+        const dueMessages = this.db.listDueOutboxMessages(
+          this.config.groupId,
+          this.now(),
+          OUTBOX_BATCH_SIZE
+        );
+        if (dueMessages.length === 0) {
+          break;
+        }
+
+        for (const outboxMessage of dueMessages) {
+          await this.deliverOutboxMessage(outboxMessage);
+        }
+      }
+    } finally {
+      this.outboxDrainInProgress = false;
+      this.refreshOutboxSchedule();
+    }
+  }
+
   summarizePoll(poll) {
     const votes = this.db.getVotesByPollId(poll.id);
     const counts = new Array(poll.options.length).fill(0);
@@ -774,40 +968,40 @@ class GameSchedulerBot {
       const closedAt = this.now();
 
       if (summary.maxVotes <= 0 || summary.topIndices.length === 0) {
-        this.db.setAnnounced({
+        const messageText = 'Poll closed. No votes were recorded this week.';
+        this.db.setAnnouncedWithOutbox({
           pollId,
           closeReason,
           closedAt,
           announcedAt: closedAt,
           winnerIdx: null,
-          winnerVotes: 0
+          winnerVotes: 0,
+          outboxMessage: this.buildOutboxTextMessage(messageText, closedAt)
         });
 
-        await this.sendGroupMessage('Poll closed. No votes were recorded this week.');
+        await this.drainOutboxQueue();
         return;
       }
 
       if (summary.topIndices.length > 1) {
         const tieDeadlineAt = closedAt + this.config.tieOverrideHours * 60 * 60 * 1000;
+        const tiedDescriptions = summary.topIndices
+          .map((index) => `${index + 1}) ${poll.options[index].label}`)
+          .join(' | ');
+        const tieMessage = `Tie detected. Use ${this.config.commandPrefix} pick <option_number> within ${this.config.tieOverrideHours}h. Tied options: ${tiedDescriptions}`;
 
-        this.db.setTiePending({
+        this.db.setTiePendingWithOutbox({
           pollId,
           closeReason,
           closedAt,
           tieDeadlineAt,
-          tieOptionIndices: summary.topIndices
+          tieOptionIndices: summary.topIndices,
+          outboxMessage: this.buildOutboxTextMessage(tieMessage, closedAt)
         });
 
         this.scheduleTieTimer(pollId, tieDeadlineAt);
 
-        const tiedDescriptions = summary.topIndices
-          .map((index) => `${index + 1}) ${poll.options[index].label}`)
-          .join(' | ');
-
-        await this.sendGroupMessage(
-          `Tie detected. Use ${this.config.commandPrefix} pick <option_number> within ${this.config.tieOverrideHours}h. Tied options: ${tiedDescriptions}`
-        );
-
+        await this.drainOutboxQueue();
         return;
       }
 
@@ -840,22 +1034,22 @@ class GameSchedulerBot {
 
   finalizeWinner(poll, winnerIdx, winnerVotes, closeReason) {
     const timestamp = this.now();
+    const slotLabel = poll.options[winnerIdx]?.label || `Option ${winnerIdx + 1}`;
+    const voteWord = winnerVotes === 1 ? 'vote' : 'votes';
+    const announcementText = `Weekly game slot selected: ${slotLabel} (${winnerVotes} ${voteWord}).`;
 
-    this.db.setAnnounced({
+    this.db.setAnnouncedWithOutbox({
       pollId: poll.id,
       closeReason,
       closedAt: poll.closedAt || timestamp,
       announcedAt: timestamp,
       winnerIdx,
-      winnerVotes
+      winnerVotes,
+      outboxMessage: this.buildOutboxTextMessage(announcementText, timestamp)
     });
 
     this.clearTimer(this.closeTimers, poll.id);
     this.clearTimer(this.tieTimers, poll.id);
-
-    const slotLabel = poll.options[winnerIdx]?.label || `Option ${winnerIdx + 1}`;
-    const voteWord = winnerVotes === 1 ? 'vote' : 'votes';
-    const announcementText = `Weekly game slot selected: ${slotLabel} (${winnerVotes} ${voteWord}).`;
 
     log('INFO', 'Winner announced.', {
       pollId: poll.id,
@@ -868,8 +1062,8 @@ class GameSchedulerBot {
   }
 
   async announceWinner(poll, winnerIdx, winnerVotes, closeReason) {
-    const announcementText = this.finalizeWinner(poll, winnerIdx, winnerVotes, closeReason);
-    await this.sendGroupMessage(announcementText);
+    this.finalizeWinner(poll, winnerIdx, winnerVotes, closeReason);
+    await this.drainOutboxQueue();
   }
 
   async onMessageCreate(message) {
@@ -1044,14 +1238,9 @@ class GameSchedulerBot {
 
       const summary = this.summarizePoll(latest);
       const winnerVotes = summary.counts[optionIdx] || 0;
-      const announcementText = this.finalizeWinner(
-        latest,
-        optionIdx,
-        winnerVotes,
-        'manual-override'
-      );
+      this.finalizeWinner(latest, optionIdx, winnerVotes, 'manual-override');
 
-      return { status: 'ok', announcementText };
+      return { status: 'ok' };
     });
 
     if (lockResult === false) {
@@ -1074,7 +1263,7 @@ class GameSchedulerBot {
     }
 
     if (lockResult.status === 'ok') {
-      await this.sendGroupMessage(lockResult.announcementText);
+      await this.drainOutboxQueue();
     }
   }
 

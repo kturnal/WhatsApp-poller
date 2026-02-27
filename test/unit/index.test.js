@@ -271,3 +271,22 @@ test('startCronIfNeeded throws for invalid cron expression', async (t) => {
 
   assert.throws(() => harness.bot.startCronIfNeeded(), /Invalid cron expression/);
 });
+
+test('sendOutboxPayload times out when sendGroupMessage stalls', async (t) => {
+  const harness = createBotHarness({}, { outboxSendTimeoutMs: 25 });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  harness.bot.sendGroupMessage = async () => {
+    await new Promise(() => {});
+  };
+
+  await assert.rejects(
+    harness.bot.sendOutboxPayload({
+      kind: 'group-text',
+      text: 'hello'
+    }),
+    /Outbox payload send timed out after 25ms\./
+  );
+});

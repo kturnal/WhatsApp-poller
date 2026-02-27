@@ -105,6 +105,17 @@ test('legacy polls uniqueness migrates to group-scoped indexes', () => {
   assert.deepEqual(groupWeekColumns, ['group_id', 'week_key']);
   assert.deepEqual(groupMessageColumns, ['group_id', 'poll_message_id']);
 
+  const outboxTable = pollDb.db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'outbox' LIMIT 1")
+    .get();
+  assert.ok(outboxTable, 'outbox table should be created during migration');
+
+  const outboxIndexes = pollDb.db.prepare("PRAGMA index_list('outbox')").all();
+  const outboxRetryIndex = outboxIndexes.find(
+    (index) => index.name === 'idx_outbox_group_status_next_retry'
+  );
+  assert.ok(outboxRetryIndex, 'outbox retry index should exist');
+
   const poll = pollDb.getPollByWeekKey('1234567890-123456789@g.us', '2026-W08');
   assert.ok(poll);
   assert.equal(poll.pollMessageId, 'legacy-message-id');

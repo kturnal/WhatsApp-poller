@@ -11,9 +11,18 @@ class FakeChat {
   constructor() {
     this.messages = [];
     this.pollMessageCount = 0;
+    this.failNextTextMessages = 0;
+    this.failTextErrorMessage = 'Simulated text send failure';
+    this.failedTextMessages = [];
   }
 
   async sendMessage(payload) {
+    if (typeof payload === 'string' && this.failNextTextMessages > 0) {
+      this.failNextTextMessages -= 1;
+      this.failedTextMessages.push(payload);
+      throw new Error(this.failTextErrorMessage);
+    }
+
     this.messages.push(payload);
 
     if (payload && payload.kind === 'poll') {
@@ -101,6 +110,9 @@ function createBotInstance(config, options = {}) {
 
   const bot = new GameSchedulerBot(config, {
     now: options.now,
+    outboxMaxAttempts: options.outboxMaxAttempts,
+    outboxRetryBaseMs: options.outboxRetryBaseMs,
+    outboxRetryMaxMs: options.outboxRetryMaxMs,
     clientFactory: () => client,
     pollFactory: (question, optionLabels, pollOptions) => ({
       kind: 'poll',
@@ -118,7 +130,10 @@ function createHarness(overrides = {}) {
   const baseConfig = createConfig(tempDir, overrides.config || {});
   const { bot, chat, client } = createBotInstance(baseConfig, {
     chat: overrides.chat,
-    now: overrides.now
+    now: overrides.now,
+    outboxMaxAttempts: overrides.outboxMaxAttempts,
+    outboxRetryBaseMs: overrides.outboxRetryBaseMs,
+    outboxRetryMaxMs: overrides.outboxRetryMaxMs
   });
 
   return {
@@ -335,6 +350,131 @@ test('restart reconciliation backfills missed votes before quorum closure', asyn
 
   const firstVoterVote = votes.find((vote) => vote.voterJid === '905551111111@c.us');
   assert.deepEqual(firstVoterVote.selectedOptions, [0]);
+
+  const textMessages = chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('outbox retries winner announcement after a transient send error', async (t) => {
+  const chat = new FakeChat();
+  chat.failNextTextMessages = 1;
+
+  const harness = createHarness({
+    chat,
+    outboxMaxAttempts: 3,
+    outboxRetryBaseMs: 20,
+    outboxRetryMaxMs: 20
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await waitForCondition(() => {
+    const outboxMessages = harness.bot.db.listOutboxMessages(harness.config.groupId);
+    return outboxMessages.length === 1 && outboxMessages[0].status === 'SENT';
+  });
+
+  const outboxMessages = harness.bot.db.listOutboxMessages(harness.config.groupId);
+  assert.equal(outboxMessages.length, 1);
+  assert.equal(outboxMessages[0].status, 'SENT');
+  assert.equal(outboxMessages[0].attemptCount, 1);
+  assert.equal(chat.failedTextMessages.length, 1);
+
+  const textMessages = chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('outbox recovery delivers a failed winner announcement after restart', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-outbox-restart-test-'));
+  const chat = new FakeChat();
+  const managedBots = new Set();
+  let clockNow = Date.now();
+
+  t.after(async () => {
+    for (const bot of managedBots) {
+      await bot.shutdown('test');
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  chat.failNextTextMessages = 1;
+
+  const firstConfig = createConfig(dataDir, {
+    requiredVoters: 2,
+    pollCloseHours: 24
+  });
+
+  const first = createBotInstance(firstConfig, {
+    chat,
+    now: () => clockNow,
+    outboxMaxAttempts: 3,
+    outboxRetryBaseMs: 60 * 1000,
+    outboxRetryMaxMs: 60 * 1000
+  });
+  managedBots.add(first.bot);
+
+  await first.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = first.bot.db.getActivePoll(firstConfig.groupId);
+  assert.ok(activePoll);
+
+  await first.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await first.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  const failedOutbox = first.bot.db.listOutboxMessages(firstConfig.groupId);
+  assert.equal(failedOutbox.length, 1);
+  assert.equal(failedOutbox[0].status, 'FAILED');
+  assert.equal(failedOutbox[0].attemptCount, 1);
+
+  await first.bot.shutdown('test');
+  managedBots.delete(first.bot);
+
+  clockNow += 2 * 60 * 1000;
+
+  const secondConfig = createConfig(dataDir, {
+    requiredVoters: 2,
+    pollCloseHours: 24
+  });
+
+  const second = createBotInstance(secondConfig, {
+    chat,
+    now: () => clockNow,
+    outboxMaxAttempts: 3,
+    outboxRetryBaseMs: 20,
+    outboxRetryMaxMs: 20
+  });
+  managedBots.add(second.bot);
+
+  await second.bot.recoverOutboxMessages();
+
+  const outboxAfterRecovery = second.bot.db.listOutboxMessages(secondConfig.groupId);
+  assert.equal(outboxAfterRecovery.length, 1);
+  assert.equal(outboxAfterRecovery[0].status, 'SENT');
+  assert.equal(outboxAfterRecovery[0].attemptCount, 1);
 
   const textMessages = chat.messages.filter((message) => typeof message === 'string');
   assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
