@@ -197,8 +197,8 @@ npm run security:audit
   - Fix invalid/missing values exactly as reported.
 - Bot runs but commands do not respond:
   - Confirm command is sent in the configured group and starts with `COMMAND_PREFIX`.
-- Poll quorum did not update after downtime:
-  - Current limitation: if the bot is offline, `vote_update` events can be missed and quorum may be stale until future reconciliation from WhatsApp poll state is implemented.
+- Poll quorum changed while bot was offline:
+  - Restart the bot to trigger startup vote reconciliation from current WhatsApp poll state.
 
 ## Data and persistence
 

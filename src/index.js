@@ -287,6 +287,7 @@ class GameSchedulerBot {
     });
 
     this.startCronIfNeeded();
+    await this.reconcilePendingPollVotes();
     this.recoverPendingPolls();
     await this.createCurrentWeekPollIfMissed();
   }
@@ -331,6 +332,103 @@ class GameSchedulerBot {
       } else if (poll.status === 'TIE_PENDING') {
         this.scheduleTieTimer(poll.id, poll.tieDeadlineAt);
       }
+    }
+  }
+
+  async reconcilePendingPollVotes() {
+    if (typeof this.client.getPollVotes !== 'function') {
+      log('WARN', 'Skipping startup vote reconciliation: client.getPollVotes is unavailable.');
+      return;
+    }
+
+    const pendingPolls = this.db.listRecoverablePolls(this.config.groupId);
+    if (pendingPolls.length === 0) {
+      return;
+    }
+
+    log('INFO', 'Reconciling active poll votes from WhatsApp.', { count: pendingPolls.length });
+
+    for (const poll of pendingPolls) {
+      await this.reconcilePollVotes(poll);
+    }
+  }
+
+  async reconcilePollVotes(poll) {
+    let pollVotes;
+
+    try {
+      pollVotes = await this.client.getPollVotes(poll.pollMessageId);
+    } catch (error) {
+      log(
+        'ERROR',
+        'Failed to fetch poll votes during startup reconciliation.',
+        errorMetadata(error, {
+          pollId: poll.id,
+          pollMessageId: poll.pollMessageId,
+          pollStatus: poll.status
+        })
+      );
+      return;
+    }
+
+    const stats = {
+      fetchedVotes: pollVotes.length,
+      upsertedVotes: 0,
+      skippedMissingVoter: 0,
+      skippedInvalidVoter: 0,
+      skippedNotAllowlisted: 0,
+      skippedInvalidSelectionOnly: 0,
+      discardedSelectionIds: 0
+    };
+
+    for (const pollVote of pollVotes) {
+      const normalized = this.normalizeVoteUpdateForPoll(poll, pollVote);
+      if (normalized.status !== 'ok') {
+        if (normalized.reason === 'missing_voter') {
+          stats.skippedMissingVoter += 1;
+        } else if (normalized.reason === 'invalid_voter') {
+          stats.skippedInvalidVoter += 1;
+        } else if (normalized.reason === 'not_allowlisted') {
+          stats.skippedNotAllowlisted += 1;
+        }
+        continue;
+      }
+
+      if (normalized.discardedLocalIds.length > 0) {
+        stats.discardedSelectionIds += normalized.discardedLocalIds.length;
+        log('WARN', 'Discarded unmatched vote selection localIds during reconciliation.', {
+          pollId: poll.id,
+          voterJid: normalized.voterJid,
+          discardedLocalIds: normalized.discardedLocalIds
+        });
+      }
+
+      if (normalized.selectedOptions.length === 0 && normalized.discardedLocalIds.length > 0) {
+        stats.skippedInvalidSelectionOnly += 1;
+        continue;
+      }
+
+      this.db.upsertVote({
+        pollId: poll.id,
+        voterJid: normalized.voterJid,
+        selectedOptions: normalized.selectedOptions,
+        updatedAt: this.now()
+      });
+      stats.upsertedVotes += 1;
+    }
+
+    const summary = this.summarizePoll(poll);
+    log('INFO', 'Startup poll reconciliation complete.', {
+      pollId: poll.id,
+      pollStatus: poll.status,
+      ...stats,
+      uniqueVoterCount: summary.uniqueVoterCount,
+      requiredVoters: this.config.requiredVoters,
+      maxVotes: summary.maxVotes
+    });
+
+    if (poll.status === 'OPEN' && summary.uniqueVoterCount >= this.config.requiredVoters) {
+      await this.closePoll(poll.id, 'quorum');
     }
   }
 
@@ -548,41 +646,11 @@ class GameSchedulerBot {
     };
   }
 
-  async onVoteUpdate(voteUpdate) {
-    const pollMessageId = extractParentMessageId(voteUpdate);
-    if (!pollMessageId) {
-      return;
-    }
-
-    const poll = this.db.getPollByMessageId(this.config.groupId, pollMessageId);
-    if (!poll || poll.status !== 'OPEN') {
-      return;
-    }
-
-    const voterRaw = voteUpdate?.voter;
-    if (!voterRaw) {
-      return;
-    }
-
-    let voterJid;
-    try {
-      voterJid = normalizeJid(voterRaw);
-    } catch {
-      return;
-    }
-
-    if (!this.config.allowedVoterSet.has(voterJid)) {
-      log('INFO', 'Ignoring vote from non-allowlisted participant.', {
-        voterJid,
-        pollId: poll.id
-      });
-      return;
-    }
-
+  mapVoteSelectionsToOptionIndices(poll, selectedOptionsRaw) {
     const discardedLocalIds = [];
     const selectedOptions = Array.from(
       new Set(
-        (voteUpdate.selectedOptions || [])
+        (selectedOptionsRaw || [])
           .map((selection) => {
             const selectedLocalId = selection?.localId;
             if (selectedLocalId === undefined || selectedLocalId === null) {
@@ -606,18 +674,84 @@ class GameSchedulerBot {
       )
     ).sort((a, b) => a - b);
 
-    if (discardedLocalIds.length > 0) {
+    return {
+      selectedOptions,
+      discardedLocalIds
+    };
+  }
+
+  normalizeVoteUpdateForPoll(poll, voteUpdate) {
+    const voterRaw = voteUpdate?.voter;
+    if (!voterRaw) {
+      return { status: 'skip', reason: 'missing_voter' };
+    }
+
+    let voterJid;
+    try {
+      voterJid = normalizeJid(voterRaw);
+    } catch {
+      return { status: 'skip', reason: 'invalid_voter' };
+    }
+
+    if (!this.config.allowedVoterSet.has(voterJid)) {
+      return {
+        status: 'skip',
+        reason: 'not_allowlisted',
+        voterJid
+      };
+    }
+
+    const { selectedOptions, discardedLocalIds } = this.mapVoteSelectionsToOptionIndices(
+      poll,
+      voteUpdate.selectedOptions
+    );
+
+    return {
+      status: 'ok',
+      voterJid,
+      selectedOptions,
+      discardedLocalIds
+    };
+  }
+
+  async onVoteUpdate(voteUpdate) {
+    const pollMessageId = extractParentMessageId(voteUpdate);
+    if (!pollMessageId) {
+      return;
+    }
+
+    const poll = this.db.getPollByMessageId(this.config.groupId, pollMessageId);
+    if (!poll || poll.status !== 'OPEN') {
+      return;
+    }
+
+    const normalized = this.normalizeVoteUpdateForPoll(poll, voteUpdate);
+    if (normalized.status !== 'ok') {
+      if (normalized.reason === 'not_allowlisted') {
+        log('INFO', 'Ignoring vote from non-allowlisted participant.', {
+          voterJid: normalized.voterJid,
+          pollId: poll.id
+        });
+      }
+      return;
+    }
+
+    if (normalized.discardedLocalIds.length > 0) {
       log('WARN', 'Discarded unmatched vote selection localIds.', {
         pollId: poll.id,
-        voterJid,
-        discardedLocalIds
+        voterJid: normalized.voterJid,
+        discardedLocalIds: normalized.discardedLocalIds
       });
+    }
+
+    if (normalized.selectedOptions.length === 0 && normalized.discardedLocalIds.length > 0) {
+      return;
     }
 
     this.db.upsertVote({
       pollId: poll.id,
-      voterJid,
-      selectedOptions,
+      voterJid: normalized.voterJid,
+      selectedOptions: normalized.selectedOptions,
       updatedAt: this.now()
     });
 
