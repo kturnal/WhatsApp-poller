@@ -4,7 +4,7 @@ Thanks for contributing to `whatsapp-poller`.
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - npm
 
 ## Local setup
@@ -30,6 +30,16 @@ npm run security:audit
 ```
 
 4. Open a pull request using the template.
+
+## Commit conventions
+
+Releases are created automatically with `release-please`, so use Conventional
+Commit prefixes in PR commits:
+
+- `feat:` for new features
+- `fix:` for bug fixes
+- `feat!:` or `BREAKING CHANGE:` for major/breaking changes
+- `docs:`, `chore:`, `test:`, `refactor:` for non-release-impacting changes
 
 ## Pull request expectations
 

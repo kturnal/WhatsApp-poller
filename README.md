@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kturnal/WhatsApp-poller/actions/workflows/ci.yml/badge.svg)](https://github.com/kturnal/WhatsApp-poller/actions/workflows/ci.yml)
 [![Security](https://github.com/kturnal/WhatsApp-poller/actions/workflows/security.yml/badge.svg)](https://github.com/kturnal/WhatsApp-poller/actions/workflows/security.yml)
+[![Release](https://github.com/kturnal/WhatsApp-poller/actions/workflows/release.yml/badge.svg)](https://github.com/kturnal/WhatsApp-poller/actions/workflows/release.yml)
 
 Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
@@ -221,6 +222,20 @@ npm run test
 npm run test:integration
 npm run security:audit
 ```
+
+## Releases
+
+- Releases are automated with `release-please` on every push to `main`/`master`.
+- Merged commits are parsed with Conventional Commits and grouped into a release PR.
+- When the release PR is merged, automation updates:
+  - `package.json` version
+  - `CHANGELOG.md`
+  - git tag (`vX.Y.Z`)
+  - GitHub Release notes
+- Recommended commit prefixes:
+  - `feat:` for new features (minor bump)
+  - `fix:` for bug fixes (patch bump)
+  - `feat!:` or `BREAKING CHANGE:` for major bump
 
 ## Troubleshooting
 
