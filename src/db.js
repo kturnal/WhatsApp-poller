@@ -21,6 +21,19 @@ const POLLS_COLUMNS = `
   announced_at INTEGER
 `;
 
+const OUTBOX_COLUMNS = `
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL,
+  max_attempts INTEGER NOT NULL,
+  next_retry_at INTEGER NOT NULL,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER
+`;
+
 class PollDatabase {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -52,6 +65,14 @@ class PollDatabase {
     `;
   }
 
+  #outboxTableSql(tableName = 'outbox') {
+    return `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        ${OUTBOX_COLUMNS}
+      );
+    `;
+  }
+
   #createIndexes() {
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_polls_group_week_unique
@@ -64,6 +85,8 @@ class PollDatabase {
         ON polls(group_id, closes_at);
       CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_id
         ON poll_votes(poll_id);
+      CREATE INDEX IF NOT EXISTS idx_outbox_group_status_next_retry
+        ON outbox(group_id, status, next_retry_at);
     `);
   }
 
@@ -180,12 +203,17 @@ class PollDatabase {
     if (!this.#tableExists('polls')) {
       this.db.exec(this.#pollTableSql('polls'));
       this.db.exec(this.#pollVotesTableSql('poll_votes'));
+      this.db.exec(this.#outboxTableSql('outbox'));
       this.#createIndexes();
       return;
     }
 
     if (!this.#tableExists('poll_votes')) {
       this.db.exec(this.#pollVotesTableSql('poll_votes'));
+    }
+
+    if (!this.#tableExists('outbox')) {
+      this.db.exec(this.#outboxTableSql('outbox'));
     }
 
     if (this.#needsGroupScopedMigration()) {
@@ -248,6 +276,25 @@ class PollDatabase {
         `vote poll_id=${row.poll_id}, voter_jid=${row.voter_jid}`
       ),
       updatedAt: row.updated_at
+    };
+  }
+
+  #mapOutbox(row) {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      groupId: row.group_id,
+      payload: this.#parseJsonField(row.payload_json, 'payload_json', `outbox id=${row.id}`),
+      status: row.status,
+      attemptCount: row.attempt_count,
+      maxAttempts: row.max_attempts,
+      nextRetryAt: row.next_retry_at,
+      lastError: row.last_error,
+      createdAt: row.created_at,
+      sentAt: row.sent_at
     };
   }
 
@@ -345,6 +392,131 @@ class PollDatabase {
     return stmt.all(pollId).map((row) => this.#mapVote(row));
   }
 
+  createOutboxMessage({
+    groupId,
+    payload,
+    maxAttempts,
+    createdAt,
+    nextRetryAt = createdAt,
+    status = 'PENDING',
+    attemptCount = 0,
+    lastError = null,
+    sentAt = null
+  }) {
+    const stmt = this.db.prepare(`
+      INSERT INTO outbox (
+        group_id,
+        payload_json,
+        status,
+        attempt_count,
+        max_attempts,
+        next_retry_at,
+        last_error,
+        created_at,
+        sent_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      groupId,
+      JSON.stringify(payload),
+      status,
+      attemptCount,
+      maxAttempts,
+      nextRetryAt,
+      lastError,
+      createdAt,
+      sentAt
+    );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  getOutboxById(outboxId) {
+    const stmt = this.db.prepare('SELECT * FROM outbox WHERE id = ? LIMIT 1');
+    return this.#mapOutbox(stmt.get(outboxId));
+  }
+
+  listOutboxMessages(groupId) {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM outbox
+      WHERE group_id = ?
+      ORDER BY id ASC
+    `);
+
+    return stmt.all(groupId).map((row) => this.#mapOutbox(row));
+  }
+
+  listDueOutboxMessages(groupId, nowMs, limit = 10) {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM outbox
+      WHERE group_id = ?
+        AND status IN ('PENDING', 'FAILED')
+        AND attempt_count < max_attempts
+        AND next_retry_at <= ?
+      ORDER BY next_retry_at ASC, id ASC
+      LIMIT ?
+    `);
+
+    return stmt.all(groupId, nowMs, limit).map((row) => this.#mapOutbox(row));
+  }
+
+  countRetryableOutboxMessages(groupId) {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM outbox
+      WHERE group_id = ?
+        AND status IN ('PENDING', 'FAILED')
+        AND attempt_count < max_attempts
+    `);
+
+    const row = stmt.get(groupId);
+    return Number(row?.count || 0);
+  }
+
+  getNextOutboxRetryAt(groupId) {
+    const stmt = this.db.prepare(`
+      SELECT MIN(next_retry_at) AS next_retry_at
+      FROM outbox
+      WHERE group_id = ?
+        AND status IN ('PENDING', 'FAILED')
+        AND attempt_count < max_attempts
+    `);
+
+    const row = stmt.get(groupId);
+    return Number.isInteger(row?.next_retry_at) ? row.next_retry_at : null;
+  }
+
+  markOutboxSent({ outboxId, sentAt }) {
+    const stmt = this.db.prepare(`
+      UPDATE outbox
+      SET
+        status = 'SENT',
+        sent_at = ?,
+        last_error = NULL
+      WHERE id = ?
+    `);
+
+    stmt.run(sentAt, outboxId);
+  }
+
+  markOutboxFailed({ outboxId, attemptCount, nextRetryAt, lastError }) {
+    const stmt = this.db.prepare(`
+      UPDATE outbox
+      SET
+        status = 'FAILED',
+        attempt_count = ?,
+        next_retry_at = ?,
+        last_error = ?,
+        sent_at = NULL
+      WHERE id = ?
+    `);
+
+    stmt.run(attemptCount, nextRetryAt, lastError, outboxId);
+  }
+
   setTiePending({ pollId, closeReason, closedAt, tieDeadlineAt, tieOptionIndices }) {
     const stmt = this.db.prepare(`
       UPDATE polls
@@ -363,6 +535,29 @@ class PollDatabase {
     stmt.run(closedAt, closeReason, tieDeadlineAt, JSON.stringify(tieOptionIndices), pollId);
   }
 
+  setTiePendingWithOutbox({
+    pollId,
+    closeReason,
+    closedAt,
+    tieDeadlineAt,
+    tieOptionIndices,
+    outboxMessage
+  }) {
+    const tx = this.db.transaction(() => {
+      this.setTiePending({
+        pollId,
+        closeReason,
+        closedAt,
+        tieDeadlineAt,
+        tieOptionIndices
+      });
+
+      return this.createOutboxMessage(outboxMessage);
+    });
+
+    return tx();
+  }
+
   setAnnounced({ pollId, closeReason, closedAt = null, announcedAt, winnerIdx, winnerVotes }) {
     const stmt = this.db.prepare(`
       UPDATE polls
@@ -379,6 +574,31 @@ class PollDatabase {
     `);
 
     stmt.run(closedAt, closeReason, winnerIdx, winnerVotes, announcedAt, pollId);
+  }
+
+  setAnnouncedWithOutbox({
+    pollId,
+    closeReason,
+    closedAt = null,
+    announcedAt,
+    winnerIdx,
+    winnerVotes,
+    outboxMessage
+  }) {
+    const tx = this.db.transaction(() => {
+      this.setAnnounced({
+        pollId,
+        closeReason,
+        closedAt,
+        announcedAt,
+        winnerIdx,
+        winnerVotes
+      });
+
+      return this.createOutboxMessage(outboxMessage);
+    });
+
+    return tx();
   }
 
   close() {
