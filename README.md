@@ -65,6 +65,78 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
    !schedule status
    ```
 
+## Always-on deployment (recommended)
+
+### Why always-on
+
+- Always-on hosting is the recommended production mode for weekly polls.
+- Quorum-based closure depends on live `vote_update` events while the bot is connected.
+- Running on a VPS/home server avoids missed activity when a personal laptop is offline.
+
+### Docker Compose setup
+
+1. Copy the example environment file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Fill required values in `.env` (`GROUP_ID`, `OWNER_PHONE`, `ALLOWED_VOTERS`).
+
+3. Start the container in detached mode:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+- Keep `./data:/app/data` persistent. It stores:
+  - WhatsApp session (`/app/data/session`)
+  - SQLite poll state (`/app/data/polls.sqlite`)
+
+### First-time QR login
+
+1. Tail container logs:
+
+   ```bash
+   docker compose logs -f whatsapp-poller
+   ```
+
+2. Scan the QR code once from the WhatsApp mobile app.
+3. Session credentials are saved under `./data/session` and reused on restarts.
+
+### Restart behavior
+
+- `restart: unless-stopped` restarts the service after container/host restarts unless manually stopped.
+- On startup, the bot reads SQLite state and recovers pending close/tie timers.
+- Weekly poll close/announce flow continues after restart as long as `./data` persists.
+
+### Backup and recovery
+
+- Back up `./data` regularly (it contains session + poll database state).
+- Recovery flow:
+  1. Stop the service (`docker compose down`).
+  2. Restore `./data` from backup.
+  3. Start again (`docker compose up -d`).
+
+### Health checks and logging basics
+
+- Check container status:
+
+  ```bash
+  docker compose ps
+  ```
+
+- Follow logs:
+
+  ```bash
+  docker compose logs -f whatsapp-poller
+  ```
+
+- Healthy operation logs typically include:
+  - client ready signal
+  - weekly cron scheduled message
+  - poll lifecycle events (created, closed, tie handling, winner announced)
+
 ## How to get `GROUP_ID`
 
 Use one of these methods:
@@ -121,6 +193,8 @@ npm run security:audit
   - Fix invalid/missing values exactly as reported.
 - Bot runs but commands do not respond:
   - Confirm command is sent in the configured group and starts with `COMMAND_PREFIX`.
+- Poll quorum did not update after downtime:
+  - Current limitation: if the bot is offline, `vote_update` events can be missed and quorum may be stale until future reconciliation from WhatsApp poll state is implemented.
 
 ## Data and persistence
 

@@ -90,20 +90,30 @@ function createConfig(dataDir, overrides = {}) {
   };
 }
 
-function createHarness(overrides = {}) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-test-'));
-  const chat = new FakeChat();
-  const baseConfig = createConfig(tempDir, overrides.config || {});
-  const client = new FakeClient(baseConfig.groupId, chat);
+function createBotInstance(config, options = {}) {
+  const chat = options.chat || new FakeChat();
+  const client = new FakeClient(config.groupId, chat);
 
-  const bot = new GameSchedulerBot(baseConfig, {
+  const bot = new GameSchedulerBot(config, {
+    now: options.now,
     clientFactory: () => client,
-    pollFactory: (question, optionLabels, options) => ({
+    pollFactory: (question, optionLabels, pollOptions) => ({
       kind: 'poll',
       question,
       optionLabels,
-      options
+      options: pollOptions
     })
+  });
+
+  return { bot, chat, client };
+}
+
+function createHarness(overrides = {}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-test-'));
+  const baseConfig = createConfig(tempDir, overrides.config || {});
+  const { bot, chat, client } = createBotInstance(baseConfig, {
+    chat: overrides.chat,
+    now: overrides.now
   });
 
   return {
@@ -116,6 +126,21 @@ function createHarness(overrides = {}) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   };
+}
+
+async function waitForCondition(condition, timeoutMs = 1500, intervalMs = 25) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await condition()) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+  }
+
+  assert.fail('Condition was not met before timeout.');
 }
 
 test('quorum votes close poll and announce winner', async (t) => {
@@ -146,6 +171,76 @@ test('quorum votes close poll and announce winner', async (t) => {
   assert.equal(latest.winningOptionIdx, 0);
 
   const textMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('restart with persistent data closes poll on deadline and announces winner', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-restart-test-'));
+  const chat = new FakeChat();
+  const managedBots = new Set();
+  let clockNow = Date.now();
+
+  t.after(async () => {
+    for (const bot of managedBots) {
+      await bot.shutdown('test');
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const firstConfig = createConfig(dataDir, {
+    requiredVoters: 5,
+    pollCloseHours: 1
+  });
+
+  const first = createBotInstance(firstConfig, {
+    chat,
+    now: () => clockNow
+  });
+  managedBots.add(first.bot);
+
+  await first.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = first.bot.db.getActivePoll(firstConfig.groupId);
+  assert.ok(activePoll);
+
+  await first.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  const openPollBeforeRestart = first.bot.db.getPollById(activePoll.id);
+  assert.equal(openPollBeforeRestart.status, 'OPEN');
+
+  await first.bot.shutdown('test');
+  managedBots.delete(first.bot);
+
+  clockNow = activePoll.closesAt + 1000;
+
+  const secondConfig = createConfig(dataDir, {
+    requiredVoters: 5,
+    pollCloseHours: 1
+  });
+
+  const second = createBotInstance(secondConfig, {
+    chat,
+    now: () => clockNow
+  });
+  managedBots.add(second.bot);
+
+  second.bot.recoverPendingPolls();
+
+  await waitForCondition(() => {
+    const latest = second.bot.db.getPollById(activePoll.id);
+    return latest && latest.status === 'ANNOUNCED';
+  });
+
+  const latest = second.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.closeReason, 'deadline');
+  assert.equal(latest.winningOptionIdx, 0);
+  assert.equal(latest.winnerVoteCount, 1);
+
+  const textMessages = chat.messages.filter((message) => typeof message === 'string');
   assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
 });
 
