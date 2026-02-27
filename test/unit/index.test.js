@@ -243,7 +243,10 @@ test('onVoteUpdate ignores invalid-only option selections', async (t) => {
     weekKey: '2026-W11',
     pollMessageId: 'poll-message-1',
     question: 'q',
-    options: [{ label: 'Mon', localId: 'opt-0' }, { label: 'Tue', localId: 'opt-1' }],
+    options: [
+      { label: 'Mon', localId: 'opt-0' },
+      { label: 'Tue', localId: 'opt-1' }
+    ],
     createdAt: now,
     closesAt: now + 3600000
   });
@@ -268,4 +271,3 @@ test('startCronIfNeeded throws for invalid cron expression', async (t) => {
 
   assert.throws(() => harness.bot.startCronIfNeeded(), /Invalid cron expression/);
 });
-
