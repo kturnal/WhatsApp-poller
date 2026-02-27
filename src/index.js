@@ -1019,7 +1019,6 @@ class GameSchedulerBot {
 
       const summary = this.summarizePoll(poll);
       const closedAt = this.now();
-      this.observability.recordPollClosed(closeReason);
 
       if (summary.maxVotes <= 0 || summary.topIndices.length === 0) {
         const messageText = 'Poll closed. No votes were recorded this week.';
@@ -1032,6 +1031,7 @@ class GameSchedulerBot {
           winnerVotes: 0,
           outboxMessage: this.buildOutboxTextMessage(messageText, closedAt)
         });
+        this.observability.recordPollClosed(closeReason);
 
         await this.drainOutboxQueue();
         return;
@@ -1053,6 +1053,7 @@ class GameSchedulerBot {
           tieOptionIndices: summary.topIndices,
           outboxMessage: this.buildOutboxTextMessage(tieMessage, closedAt)
         });
+        this.observability.recordPollClosed(closeReason);
 
         this.scheduleTieTimer(pollId, tieDeadlineAt);
 
@@ -1060,7 +1061,9 @@ class GameSchedulerBot {
         return;
       }
 
-      await this.announceWinner(poll, summary.topIndices[0], summary.maxVotes, closeReason);
+      this.finalizeWinner(poll, summary.topIndices[0], summary.maxVotes, closeReason);
+      this.observability.recordPollClosed(closeReason);
+      await this.drainOutboxQueue();
     });
   }
 

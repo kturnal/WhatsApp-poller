@@ -58,13 +58,32 @@ class BotObservability {
 
     return new Promise((resolve, reject) => {
       const server = this.server;
-      const onError = (error) => {
+      const cleanupListeners = () => {
+        server.off('error', onError);
         server.off('listening', onListening);
+      };
+
+      const rejectWithCleanup = (error) => {
+        cleanupListeners();
+        if (this.server === server) {
+          this.server = null;
+          this.listeningPort = null;
+        }
         reject(error);
       };
 
+      const onError = (error) => {
+        rejectWithCleanup(error);
+      };
+
       const onListening = () => {
-        server.off('error', onError);
+        cleanupListeners();
+        if (this.server !== server) {
+          server.close(() => {});
+          rejectWithCleanup(new Error('Observability server instance changed during startup.'));
+          return;
+        }
+
         const address = server.address();
         this.listeningPort =
           address && typeof address === 'object' && Number.isInteger(address.port)
@@ -75,7 +94,11 @@ class BotObservability {
 
       server.once('error', onError);
       server.once('listening', onListening);
-      server.listen({ host: this.host, port: this.port });
+      try {
+        server.listen({ host: this.host, port: this.port });
+      } catch (error) {
+        rejectWithCleanup(error);
+      }
     });
   }
 
@@ -212,7 +235,8 @@ class BotObservability {
     if (pathname === '/metrics') {
       const body = this.renderPrometheusMetrics();
       this.sendText(response, method, 200, body, {
-        'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
+        'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+        'Cache-Control': 'no-store'
       });
       return;
     }
