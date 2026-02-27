@@ -22,6 +22,7 @@ const OUTBOX_BATCH_SIZE = 20;
 const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
 const DEFAULT_OUTBOX_RETRY_BASE_MS = 30 * 1000;
 const DEFAULT_OUTBOX_RETRY_MAX_MS = 30 * 60 * 1000;
+const DEFAULT_OUTBOX_SEND_TIMEOUT_MS = 30 * 1000;
 
 /**
  * Extracts a normalized message identifier from a message object.
@@ -123,6 +124,10 @@ class GameSchedulerBot {
       Number.isInteger(dependencies.outboxRetryMaxMs) && dependencies.outboxRetryMaxMs > 0
         ? dependencies.outboxRetryMaxMs
         : DEFAULT_OUTBOX_RETRY_MAX_MS;
+    this.outboxSendTimeoutMs =
+      Number.isInteger(dependencies.outboxSendTimeoutMs) && dependencies.outboxSendTimeoutMs > 0
+        ? dependencies.outboxSendTimeoutMs
+        : DEFAULT_OUTBOX_SEND_TIMEOUT_MS;
 
     setLogOptions({
       redactSensitive: this.config.logRedactSensitive,
@@ -710,7 +715,18 @@ class GameSchedulerBot {
       throw new Error('Unsupported outbox payload.');
     }
 
-    await this.sendGroupMessage(payload.text);
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`Outbox payload send timed out after ${this.outboxSendTimeoutMs}ms.`));
+      }, this.outboxSendTimeoutMs);
+    });
+
+    try {
+      await Promise.race([this.sendGroupMessage(payload.text), timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async deliverOutboxMessage(outboxMessage) {
