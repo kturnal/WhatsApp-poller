@@ -89,7 +89,11 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
    docker compose up -d --build
    ```
 
-- Keep `./data:/app/data` persistent. It stores:
+- Keep Docker volume persistence aligned with `DATA_DIR`. By default this repo uses
+  `./data:/app/data`. If you change `DATA_DIR` from its default value, update the
+  Compose host-path mapping to point to the same persistent directory (for example,
+  `./${DATA_DIR}:/app/data`).
+- Persistent `/app/data` stores:
   - WhatsApp session (`/app/data/session`)
   - SQLite poll state (`/app/data/polls.sqlite`)
 

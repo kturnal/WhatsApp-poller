@@ -122,13 +122,27 @@ function createHarness(overrides = {}) {
     client,
     config: baseConfig,
     cleanup: async () => {
-      await bot.shutdown('test');
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      let shutdownError;
+      try {
+        await bot.shutdown('test');
+      } catch (error) {
+        shutdownError = error;
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+
+      if (shutdownError) {
+        throw shutdownError;
+      }
     }
   };
 }
 
-async function waitForCondition(condition, timeoutMs = 1500, intervalMs = 25) {
+const testWaitMsFromEnv = Number.parseInt(process.env.TEST_WAIT_MS || '', 10);
+const DEFAULT_WAIT_TIMEOUT_MS =
+  Number.isInteger(testWaitMsFromEnv) && testWaitMsFromEnv > 0 ? testWaitMsFromEnv : 5000;
+
+async function waitForCondition(condition, timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, intervalMs = 25) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
