@@ -106,9 +106,7 @@ test('legacy polls uniqueness migrates to group-scoped indexes', () => {
   assert.deepEqual(groupMessageColumns, ['group_id', 'poll_message_id']);
 
   const outboxTable = pollDb.db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'outbox' LIMIT 1"
-    )
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'outbox' LIMIT 1")
     .get();
   assert.ok(outboxTable, 'outbox table should be created during migration');
 
