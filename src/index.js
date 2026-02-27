@@ -9,6 +9,7 @@ const { Client, LocalAuth, Poll } = require('whatsapp-web.js');
 const { loadConfig, normalizeJid } = require('./config');
 const { PollDatabase } = require('./db');
 const { errorMetadata, log, setLogOptions } = require('./logger');
+const { BotObservability } = require('./observability');
 const {
   buildOptionsForWeek,
   currentWeekContext,
@@ -144,6 +145,13 @@ class GameSchedulerBot {
     this.commandWindows = new Map();
     this.outboxTimer = null;
     this.outboxDrainInProgress = false;
+    this.observability =
+      dependencies.observability ||
+      new BotObservability({
+        port: Number.isInteger(this.config.healthServerPort) ? this.config.healthServerPort : null,
+        now: this.now,
+        collectRuntimeGauges: () => this.collectRuntimeGauges()
+      });
 
     this.clientFactory =
       dependencies.clientFactory ||
@@ -195,16 +203,20 @@ class GameSchedulerBot {
     });
 
     this.client.on('ready', () => {
+      this.observability.markClientReady();
+      this.observability.markStartupPending();
       this.#safeRun('ready', async () => {
         await this.onReady();
       });
     });
 
     this.client.on('auth_failure', (message) => {
+      this.observability.markClientNotReady();
       log('ERROR', 'Authentication failure.', { message });
     });
 
     this.client.on('disconnected', (reason) => {
+      this.observability.markClientDisconnected();
       log('WARN', 'Client disconnected.', { reason });
     });
 
@@ -266,13 +278,33 @@ class GameSchedulerBot {
     return false;
   }
 
+  collectRuntimeGauges() {
+    if (!this.db) {
+      return {
+        activePolls: 0,
+        outboxRetryableMessages: 0
+      };
+    }
+
+    return {
+      activePolls: this.db.getActivePoll(this.config.groupId) ? 1 : 0,
+      outboxRetryableMessages: this.db.countRetryableOutboxMessages(this.config.groupId)
+    };
+  }
+
   async start() {
     log('INFO', 'Starting WhatsApp scheduler bot.');
+    const observabilityPort = await this.observability.start();
+    if (observabilityPort !== null) {
+      log('INFO', 'Observability HTTP server started.', { port: observabilityPort });
+    }
+
     await this.client.initialize();
   }
 
   async shutdown(signal) {
     log('INFO', 'Shutting down bot.', { signal });
+    this.observability.markShutdownStarted();
 
     if (this.cronTask) {
       this.cronTask.stop();
@@ -298,7 +330,25 @@ class GameSchedulerBot {
       }
     }
 
-    await this.client.destroy();
+    let destroyError = null;
+    try {
+      await this.client.destroy();
+    } catch (error) {
+      destroyError = error;
+    }
+
+    try {
+      await this.observability.stop();
+    } catch (error) {
+      log('ERROR', 'Failed to stop observability HTTP server.', errorMetadata(error));
+      if (!destroyError) {
+        destroyError = error;
+      }
+    }
+
+    if (destroyError) {
+      throw destroyError;
+    }
   }
 
   async onReady() {
@@ -315,6 +365,7 @@ class GameSchedulerBot {
     this.recoverPendingPolls();
     await this.recoverOutboxMessages();
     await this.createCurrentWeekPollIfMissed();
+    this.observability.markStartupComplete();
   }
 
   startCronIfNeeded() {
@@ -543,6 +594,7 @@ class GameSchedulerBot {
       });
 
       this.scheduleCloseTimer(pollId, closesAt);
+      this.observability.recordPollCreated();
 
       log('INFO', 'Weekly poll created.', {
         pollId,
@@ -748,6 +800,7 @@ class GameSchedulerBot {
       const exhausted = attemptCount >= outboxMessage.maxAttempts;
       const retryDelayMs = this.getOutboxRetryDelayMs(attemptCount);
       const nextRetryAt = exhausted ? startedAt : startedAt + retryDelayMs;
+      this.observability.recordOutboxFailure(!exhausted);
 
       this.db.markOutboxFailed({
         outboxId: outboxMessage.id,
@@ -966,6 +1019,7 @@ class GameSchedulerBot {
 
       const summary = this.summarizePoll(poll);
       const closedAt = this.now();
+      this.observability.recordPollClosed(closeReason);
 
       if (summary.maxVotes <= 0 || summary.topIndices.length === 0) {
         const messageText = 'Poll closed. No votes were recorded this week.';
@@ -984,6 +1038,7 @@ class GameSchedulerBot {
       }
 
       if (summary.topIndices.length > 1) {
+        this.observability.recordTieFlow();
         const tieDeadlineAt = closedAt + this.config.tieOverrideHours * 60 * 60 * 1000;
         const tiedDescriptions = summary.topIndices
           .map((index) => `${index + 1}) ${poll.options[index].label}`)

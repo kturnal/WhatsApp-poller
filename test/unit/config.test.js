@@ -54,7 +54,8 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       LOG_INCLUDE_STACK: undefined,
       COMMAND_RATE_LIMIT_COUNT: undefined,
       COMMAND_RATE_LIMIT_WINDOW_MS: undefined,
-      COMMAND_MAX_LENGTH: undefined
+      COMMAND_MAX_LENGTH: undefined,
+      HEALTH_SERVER_PORT: undefined
     },
     () => {
       const config = loadConfig();
@@ -65,6 +66,7 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       assert.equal(config.commandRateLimitCount, 8);
       assert.equal(config.commandRateLimitWindowMs, 60000);
       assert.equal(config.commandMaxLength, 256);
+      assert.equal(config.healthServerPort, null);
     }
   );
 });
@@ -90,7 +92,8 @@ test('loadConfig parses explicit security and command settings', () => {
       LOG_INCLUDE_STACK: 'true',
       COMMAND_RATE_LIMIT_COUNT: '3',
       COMMAND_RATE_LIMIT_WINDOW_MS: '30000',
-      COMMAND_MAX_LENGTH: '128'
+      COMMAND_MAX_LENGTH: '128',
+      HEALTH_SERVER_PORT: '8080'
     },
     () => {
       const config = loadConfig();
@@ -101,6 +104,19 @@ test('loadConfig parses explicit security and command settings', () => {
       assert.equal(config.commandRateLimitCount, 3);
       assert.equal(config.commandRateLimitWindowMs, 30000);
       assert.equal(config.commandMaxLength, 128);
+      assert.equal(config.healthServerPort, 8080);
+    }
+  );
+});
+
+test('loadConfig rejects invalid HEALTH_SERVER_PORT range', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      HEALTH_SERVER_PORT: '70000'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /HEALTH_SERVER_PORT must be between 1 and 65535/);
     }
   );
 });

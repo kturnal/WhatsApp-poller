@@ -93,6 +93,15 @@ function checkConfigConsistency(config) {
   } else {
     printResult('PASS', 'Chromium sandbox protections are enabled by default.');
   }
+
+  if (config.healthServerPort === null) {
+    printResult(
+      'PASS',
+      'Health/metrics HTTP server is disabled (set HEALTH_SERVER_PORT to enable).'
+    );
+  } else {
+    printResult('PASS', `Health/metrics HTTP server will bind to port ${config.healthServerPort}.`);
+  }
 }
 
 function runDoctor() {

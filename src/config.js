@@ -135,7 +135,7 @@ function validateTimezone(timezone) {
  * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
  * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
  *
- * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number}} Configuration object containing validated and derived settings:
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
  * - `groupId`: WhatsApp group JID ending with `@g.us`.
  * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
  * - `allowedVoters`: Array of normalized voter JIDs.
@@ -156,6 +156,7 @@ function validateTimezone(timezone) {
  * - `commandRateLimitCount`: Maximum accepted command count per sender window.
  * - `commandRateLimitWindowMs`: Rate-limit window duration in milliseconds.
  * - `commandMaxLength`: Maximum accepted command text length.
+ * - `healthServerPort`: Optional port for health/metrics HTTP server (`null` disables server).
  */
 function loadConfig() {
   const groupId = mustReadEnv('GROUP_ID');
@@ -221,6 +222,11 @@ function loadConfig() {
     throw new Error('COMMAND_MAX_LENGTH must be >= 16.');
   }
 
+  const healthServerPort = parseInteger('HEALTH_SERVER_PORT', null);
+  if (healthServerPort !== null && (healthServerPort < 1 || healthServerPort > 65535)) {
+    throw new Error('HEALTH_SERVER_PORT must be between 1 and 65535.');
+  }
+
   return {
     groupId,
     ownerJid,
@@ -241,7 +247,8 @@ function loadConfig() {
     logIncludeStack,
     commandRateLimitCount,
     commandRateLimitWindowMs,
-    commandMaxLength
+    commandMaxLength,
+    healthServerPort
   };
 }
 

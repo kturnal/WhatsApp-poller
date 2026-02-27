@@ -122,7 +122,7 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
   2. Restore `./data` from backup.
   3. Start again (`docker compose up -d`).
 
-### Health checks and logging basics
+### Health checks, metrics, and logging basics
 
 - Check container status:
 
@@ -140,6 +140,40 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
   - client ready signal
   - weekly cron scheduled message
   - poll lifecycle events (created, closed, tie handling, winner announced)
+
+- Optional health/metrics HTTP server:
+  - Set `HEALTH_SERVER_PORT` in `.env` (for example `HEALTH_SERVER_PORT=8080`).
+  - Exposes:
+    - `GET /health/live`
+    - `GET /health/ready`
+    - `GET /metrics` (Prometheus text format)
+  - When running in Docker, publish the same port in `docker-compose.yml` (for example `ports: ["8080:8080"]`).
+
+- Example checks:
+
+  ```bash
+  curl -sS http://localhost:8080/health/live
+  curl -sS http://localhost:8080/health/ready
+  curl -sS http://localhost:8080/metrics
+  ```
+
+- Exposed metric names (stable):
+  - `whatsapp_poller_polls_created_total`
+  - `whatsapp_poller_polls_closed_total`
+  - `whatsapp_poller_poll_closes_quorum_total`
+  - `whatsapp_poller_poll_tie_flows_total`
+  - `whatsapp_poller_outbox_send_failures_total`
+  - `whatsapp_poller_outbox_send_retries_total`
+  - `whatsapp_poller_client_disconnects_total`
+  - `whatsapp_poller_client_reconnects_total`
+  - `whatsapp_poller_process_healthy`
+  - `whatsapp_poller_whatsapp_ready`
+  - `whatsapp_poller_startup_complete`
+  - `whatsapp_poller_ready`
+  - `whatsapp_poller_active_polls`
+  - `whatsapp_poller_outbox_retryable_messages`
+  - `process_start_time_seconds`
+  - `process_uptime_seconds`
 
 ## How to get `GROUP_ID`
 
@@ -177,6 +211,7 @@ See `.env.example` for the complete list. Most relevant settings:
 - `ALLOW_INSECURE_CHROMIUM` - disable Chromium sandbox (not recommended)
 - `COMMAND_RATE_LIMIT_COUNT`, `COMMAND_RATE_LIMIT_WINDOW_MS` - anti-flood controls
 - `COMMAND_MAX_LENGTH` - max accepted command payload length
+- `HEALTH_SERVER_PORT` - optional HTTP port for `/health/live`, `/health/ready`, `/metrics`
 
 ## Development
 
