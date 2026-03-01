@@ -32,6 +32,7 @@ class FakeClient extends EventEmitter {
     super();
     this.groupId = groupId;
     this.chat = chat;
+    this.lidAndPhoneByUserId = new Map();
   }
 
   async initialize() {}
@@ -48,6 +49,14 @@ class FakeClient extends EventEmitter {
 
   async getPollVotes() {
     return [];
+  }
+
+  async getContactLidAndPhone(userIds) {
+    const ids = Array.isArray(userIds) ? userIds : [userIds];
+
+    return ids.map((id) => {
+      return this.lidAndPhoneByUserId.get(id) || { lid: id, pn: null };
+    });
   }
 }
 
@@ -197,18 +206,18 @@ test('normalizeVoteUpdateForPoll returns skip reasons and normalized vote payloa
     options: [{ localId: 'opt-0' }, { localId: 'opt-1' }]
   };
 
-  assert.deepEqual(harness.bot.normalizeVoteUpdateForPoll(poll, {}), {
+  assert.deepEqual(await harness.bot.normalizeVoteUpdateForPoll(poll, {}), {
     status: 'skip',
     reason: 'missing_voter'
   });
 
-  assert.deepEqual(harness.bot.normalizeVoteUpdateForPoll(poll, { voter: '   ' }), {
+  assert.deepEqual(await harness.bot.normalizeVoteUpdateForPoll(poll, { voter: '   ' }), {
     status: 'skip',
     reason: 'invalid_voter'
   });
 
   assert.deepEqual(
-    harness.bot.normalizeVoteUpdateForPoll(poll, {
+    await harness.bot.normalizeVoteUpdateForPoll(poll, {
       voter: '905559999999',
       selectedOptions: [{ localId: 'opt-0' }]
     }),
@@ -220,7 +229,7 @@ test('normalizeVoteUpdateForPoll returns skip reasons and normalized vote payloa
   );
 
   assert.deepEqual(
-    harness.bot.normalizeVoteUpdateForPoll(poll, {
+    await harness.bot.normalizeVoteUpdateForPoll(poll, {
       voter: '905551111111',
       selectedOptions: [{ localId: 'opt-1' }]
     }),
@@ -228,6 +237,23 @@ test('normalizeVoteUpdateForPoll returns skip reasons and normalized vote payloa
       status: 'ok',
       voterJid: '905551111111@c.us',
       selectedOptions: [1],
+      discardedLocalIds: []
+    }
+  );
+
+  harness.client.lidAndPhoneByUserId.set('owner-lid@lid', {
+    lid: 'owner-lid@lid',
+    pn: '905551111111@c.us'
+  });
+  assert.deepEqual(
+    await harness.bot.normalizeVoteUpdateForPoll(poll, {
+      voter: 'owner-lid@lid',
+      selectedOptions: [{ localId: 'opt-0' }]
+    }),
+    {
+      status: 'ok',
+      voterJid: '905551111111@c.us',
+      selectedOptions: [0],
       discardedLocalIds: []
     }
   );
@@ -272,6 +298,31 @@ test('startCronIfNeeded throws for invalid cron expression', async (t) => {
   });
 
   assert.throws(() => harness.bot.startCronIfNeeded(), /Invalid cron expression/);
+});
+
+test('onMessageCreate does not warn for non-command messages with many tokens', async (t) => {
+  const harness = createBotHarness();
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const originalConsoleLog = console.log;
+  const logs = [];
+  console.log = (message) => {
+    logs.push(String(message));
+  };
+
+  try {
+    await harness.bot.onMessageCreate({
+      body: 'hello this is a regular chat message with many words from a participant',
+      from: harness.config.groupId,
+      author: '905552222222@c.us'
+    });
+  } finally {
+    console.log = originalConsoleLog;
+  }
+
+  assert.equal(logs.some((entry) => entry.includes('Ignoring command: too many tokens.')), false);
 });
 
 test('sendOutboxPayload times out when sendGroupMessage stalls', async (t) => {
