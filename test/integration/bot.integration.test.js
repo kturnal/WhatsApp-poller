@@ -90,6 +90,8 @@ function createConfig(dataDir, overrides = {}) {
     tieOverrideHours: 6,
     pollCron: '0 12 * * 1',
     pollQuestion: 'Weekly game night test poll',
+    weekSelectionMode: 'auto',
+    targetWeek: null,
     clientId: 'test-client',
     dataDir,
     headless: true,

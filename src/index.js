@@ -13,9 +13,11 @@ const { BotObservability } = require('./observability');
 const {
   buildOptionsForWeek,
   currentWeekContext,
+  formatWeekDateRangeLabel,
   scheduledWeeklyRunForWeek
 } = require('./poll-slots');
 const { enforceSecureRuntimePermissions } = require('./runtime-security');
+const { resolveStartupWeekSelection } = require('./startup-week-selector');
 
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const MAX_COMMAND_TOKENS = 6;
@@ -164,6 +166,8 @@ class GameSchedulerBot {
       ((question, optionLabels, options) => {
         return new Poll(question, optionLabels, options);
       });
+    this.startupWeekSelectionResolver =
+      dependencies.startupWeekSelectionResolver || resolveStartupWeekSelection;
 
     const puppeteerArgs = [];
     if (this.config.allowInsecureChromium) {
@@ -355,16 +359,25 @@ class GameSchedulerBot {
     await this.client.getChatById(this.config.groupId);
     this.hardenRuntimePermissions('post-ready');
 
+    const weekSelectionMode = this.config.weekSelectionMode || 'auto';
+
     log('INFO', 'WhatsApp client is ready.', {
       groupId: this.config.groupId,
-      timezone: this.config.timezone
+      timezone: this.config.timezone,
+      weekSelectionMode
     });
 
-    this.startCronIfNeeded();
     await this.reconcilePendingPollVotes();
     this.recoverPendingPolls();
     await this.recoverOutboxMessages();
-    await this.createCurrentWeekPollIfMissed();
+
+    if (weekSelectionMode === 'auto') {
+      this.startCronIfNeeded();
+      await this.createCurrentWeekPollIfMissed();
+    } else {
+      await this.createStartupSelectedWeekPollIfNeeded();
+    }
+
     this.observability.markStartupComplete();
   }
 
@@ -533,6 +546,56 @@ class GameSchedulerBot {
     await this.createWeeklyPollIfNeeded('startup-catchup');
   }
 
+  async createStartupSelectedWeekPollIfNeeded() {
+    const active = this.db.getActivePoll(this.config.groupId);
+    if (active) {
+      log('INFO', 'Skipping interactive startup week selection because an active poll exists.', {
+        activePollId: active.id,
+        activeStatus: active.status
+      });
+      return;
+    }
+
+    const selection = await this.startupWeekSelectionResolver({
+      config: this.config,
+      db: this.db,
+      nowMillis: this.now()
+    });
+
+    if (!selection) {
+      return;
+    }
+
+    const weekLabel =
+      selection.weekLabel ||
+      formatWeekDateRangeLabel(this.config.timezone, selection.weekYear, selection.weekNumber);
+
+    if (selection.action === 'skip') {
+      log('INFO', 'Startup week selection skipped poll creation for existing week.', {
+        weekKey: selection.weekKey,
+        weekLabel
+      });
+      return;
+    }
+
+    if (selection.action === 'replace' && Number.isInteger(selection.existingPollId)) {
+      this.clearTimer(this.closeTimers, selection.existingPollId);
+      this.clearTimer(this.tieTimers, selection.existingPollId);
+    }
+
+    await this.createPollForWeek({
+      trigger:
+        selection.action === 'replace' ? 'startup-interactive-replace' : 'startup-interactive',
+      weekYear: selection.weekYear,
+      weekNumber: selection.weekNumber,
+      weekKey: selection.weekKey,
+      replacePollId:
+        selection.action === 'replace' && Number.isInteger(selection.existingPollId)
+          ? selection.existingPollId
+          : null
+    });
+  }
+
   async createWeeklyPollIfNeeded(trigger) {
     const active = this.db.getActivePoll(this.config.groupId);
     if (active) {
@@ -557,6 +620,24 @@ class GameSchedulerBot {
       return;
     }
 
+    await this.createPollForWeek({
+      trigger,
+      weekYear,
+      weekNumber,
+      weekKey,
+      replacePollId: null,
+      createdAt: now.toMillis()
+    });
+  }
+
+  async createPollForWeek({
+    trigger,
+    weekYear,
+    weekNumber,
+    weekKey,
+    replacePollId = null,
+    createdAt
+  }) {
     const options = buildOptionsForWeek(this.config.timezone, weekYear, weekNumber);
     const optionLabels = options.map((option) => option.label);
     let pollMessageId = null;
@@ -580,29 +661,52 @@ class GameSchedulerBot {
         };
       });
 
-      const createdAt = now.toMillis();
-      const closesAt = createdAt + this.config.pollCloseHours * 60 * 60 * 1000;
+      const createdAtMillis = Number.isInteger(createdAt) ? createdAt : this.now();
+      const pollId = Number.isInteger(replacePollId) ? replacePollId : null;
+      const closesAt = createdAtMillis + this.config.pollCloseHours * 60 * 60 * 1000;
 
-      const pollId = this.db.createPoll({
-        groupId: this.config.groupId,
-        weekKey,
-        pollMessageId,
-        question: this.config.pollQuestion,
-        options: optionsWithLocalIds,
-        createdAt,
-        closesAt
-      });
+      if (pollId === null) {
+        const newPollId = this.db.createPoll({
+          groupId: this.config.groupId,
+          weekKey,
+          pollMessageId,
+          question: this.config.pollQuestion,
+          options: optionsWithLocalIds,
+          createdAt: createdAtMillis,
+          closesAt
+        });
 
-      this.scheduleCloseTimer(pollId, closesAt);
-      this.observability.recordPollCreated();
+        this.scheduleCloseTimer(newPollId, closesAt);
+        this.observability.recordPollCreated();
 
-      log('INFO', 'Weekly poll created.', {
-        pollId,
-        pollMessageId,
-        weekKey,
-        closesAt,
-        trigger
-      });
+        log('INFO', 'Weekly poll created.', {
+          pollId: newPollId,
+          pollMessageId,
+          weekKey,
+          closesAt,
+          trigger
+        });
+      } else {
+        this.db.replacePollInPlace({
+          pollId,
+          pollMessageId,
+          question: this.config.pollQuestion,
+          options: optionsWithLocalIds,
+          createdAt: createdAtMillis,
+          closesAt
+        });
+
+        this.scheduleCloseTimer(pollId, closesAt);
+        this.observability.recordPollCreated();
+
+        log('INFO', 'Weekly poll replaced in place.', {
+          pollId,
+          pollMessageId,
+          weekKey,
+          closesAt,
+          trigger
+        });
+      }
     } catch (error) {
       if (pollMessageId) {
         log(
@@ -611,6 +715,7 @@ class GameSchedulerBot {
           errorMetadata(error, {
             weekKey,
             pollMessageId,
+            replacePollId,
             trigger
           })
         );

@@ -8,7 +8,9 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 ## What it does
 
-- Creates one weekly poll in a target group (`POLL_CRON`, default Monday 12:00).
+- Creates one weekly poll in a target group.
+  - Default startup mode (`WEEK_SELECTION_MODE=interactive`) asks which ISO week to run (for example `2026 W10 March 2 - March 8`).
+  - Optional auto mode (`WEEK_SELECTION_MODE=auto`) uses `POLL_CRON` (default Monday 12:00) and startup catch-up.
 - Uses fixed slot options:
   - Weekdays: Mon-Fri 20:00
   - Weekends: Sat/Sun 10:00, 15:00, 20:00
@@ -60,7 +62,9 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 6. Scan QR code from WhatsApp mobile app on first run.
 
-7. In group chat, verify command handling:
+7. After startup, enter the target ISO week in terminal when prompted (unless `WEEK_SELECTION_MODE=auto`).
+
+8. In group chat, verify command handling:
 
    ```text
    !schedule status
@@ -83,6 +87,8 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
    ```
 
 2. Fill required values in `.env` (`GROUP_ID`, `OWNER_PHONE`, `ALLOWED_VOTERS`).
+   - For non-interactive container restarts in interactive mode, set `TARGET_WEEK=YYYY-Www`.
+   - Or set `WEEK_SELECTION_MODE=auto` to keep cron-driven behavior.
 
 3. Start the container in detached mode:
 
@@ -139,7 +145,7 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 - Healthy operation logs typically include:
   - client ready signal
-  - weekly cron scheduled message
+  - weekly cron scheduled message (auto mode)
   - poll lifecycle events (created, closed, tie handling, winner announced)
 
 - Optional health/metrics HTTP server:
@@ -205,7 +211,9 @@ Use one of these methods:
 
 See `.env.example` for the complete list. Most relevant settings:
 
-- `POLL_CRON` - weekly schedule cron
+- `WEEK_SELECTION_MODE` - `interactive` (default) or `auto`
+- `TARGET_WEEK` - optional startup week override in `YYYY-Www` format (mainly for non-interactive startup)
+- `POLL_CRON` - weekly schedule cron (used in `auto` mode)
 - `TIMEZONE` - timezone used for scheduling and display
 - `POLL_CLOSE_HOURS` - auto-close timeout
 - `REQUIRED_VOTERS` - quorum threshold
