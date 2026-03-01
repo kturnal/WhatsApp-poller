@@ -62,10 +62,11 @@ function enforceSecureRuntimePermissions(dataDir) {
     throw new Error('DATA_DIR must be a non-empty string.');
   }
 
-  fs.mkdirSync(dataDir, { recursive: true, mode: DIRECTORY_MODE });
+  const resolvedDataDir = path.resolve(dataDir);
+  fs.mkdirSync(resolvedDataDir, { recursive: true, mode: DIRECTORY_MODE });
 
   const remediations = [];
-  walkSecure(dataDir, remediations, dataDir);
+  walkSecure(resolvedDataDir, remediations, resolvedDataDir);
   return remediations;
 }
 
