@@ -1,6 +1,7 @@
+const fs = require('node:fs');
 const path = require('node:path');
 const { DateTime } = require('luxon');
-const { parseWeekSpecifier } = require('./poll-slots');
+const { SLOT_TEMPLATE, parseWeekSpecifier, validateSlotTemplate } = require('./poll-slots');
 
 /**
  * Retrieve and validate a required environment variable.
@@ -130,13 +131,70 @@ function validateTimezone(timezone) {
   }
 }
 
+function parseSlotTemplateJson(raw, sourceName) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${sourceName} must contain valid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+
+  return validateSlotTemplate(parsed, sourceName);
+}
+
+function loadSlotTemplateConfig() {
+  const slotTemplateJsonRaw = process.env.SLOT_TEMPLATE_JSON;
+  const slotTemplatePathRaw = process.env.SLOT_TEMPLATE_PATH;
+  const hasJson = typeof slotTemplateJsonRaw === 'string' && slotTemplateJsonRaw.trim().length > 0;
+  const hasPath = typeof slotTemplatePathRaw === 'string' && slotTemplatePathRaw.trim().length > 0;
+
+  if (hasJson && hasPath) {
+    throw new Error('Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH.');
+  }
+
+  if (hasJson) {
+    return {
+      slotTemplate: parseSlotTemplateJson(slotTemplateJsonRaw.trim(), 'SLOT_TEMPLATE_JSON'),
+      slotTemplateSource: 'SLOT_TEMPLATE_JSON'
+    };
+  }
+
+  if (hasPath) {
+    const resolvedPath = path.resolve(process.cwd(), slotTemplatePathRaw.trim());
+    let fileContent;
+    try {
+      fileContent = fs.readFileSync(resolvedPath, 'utf8');
+    } catch (error) {
+      throw new Error(
+        `Could not read SLOT_TEMPLATE_PATH file (${resolvedPath}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+
+    return {
+      slotTemplate: parseSlotTemplateJson(fileContent, `SLOT_TEMPLATE_PATH file (${resolvedPath})`),
+      slotTemplateSource: resolvedPath
+    };
+  }
+
+  return {
+    slotTemplate: SLOT_TEMPLATE.map((slot) => ({ ...slot })),
+    slotTemplateSource: 'default'
+  };
+}
+
 /**
  * Load and validate runtime configuration from environment variables.
  *
  * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
  * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
  *
- * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, weekSelectionMode: 'interactive'|'auto', targetWeek: string|null, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, slotTemplate: {weekday:number, hour:number, minute:number}[], slotTemplateSource: string, weekSelectionMode: 'interactive'|'auto', targetWeek: string|null, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
  * - `groupId`: WhatsApp group JID ending with `@g.us`.
  * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
  * - `allowedVoters`: Array of normalized voter JIDs.
@@ -147,6 +205,8 @@ function validateTimezone(timezone) {
  * - `tieOverrideHours`: Hours after which a tie can be overridden (>= 1).
  * - `pollCron`: Cron expression for scheduled polls.
  * - `pollQuestion`: Default poll question text.
+ * - `slotTemplate`: Weekly slot definitions used to build poll option labels.
+ * - `slotTemplateSource`: Source marker for slot-template configuration.
  * - `weekSelectionMode`: Startup poll selection mode (`interactive` or `auto`).
  * - `targetWeek`: Optional explicit startup week key in `YYYY-Www` format.
  * - `clientId`: Identifier for the client.
@@ -196,6 +256,7 @@ function loadConfig() {
   const pollQuestion =
     process.env.POLL_QUESTION?.trim() ||
     `Weekly game night - pick all slots you can join (${timezone})`;
+  const { slotTemplate, slotTemplateSource } = loadSlotTemplateConfig();
   const rawWeekSelectionMode =
     process.env.WEEK_SELECTION_MODE?.trim().toLowerCase() || 'interactive';
   if (!['interactive', 'auto'].includes(rawWeekSelectionMode)) {
@@ -257,6 +318,8 @@ function loadConfig() {
     tieOverrideHours,
     pollCron,
     pollQuestion,
+    slotTemplate,
+    slotTemplateSource,
     weekSelectionMode: rawWeekSelectionMode,
     targetWeek: targetWeekRaw,
     clientId,
