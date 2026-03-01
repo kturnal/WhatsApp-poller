@@ -209,22 +209,10 @@ Use one of these methods:
 
 ## Configuration
 
-See `.env.example` for the complete list. Most relevant settings:
+`.env.example` is the canonical configuration reference for all runtime environment variables, including defaults, valid values, constraints, and examples.
 
-- `WEEK_SELECTION_MODE` - `interactive` (default) or `auto`
-- `TARGET_WEEK` - optional startup week override in `YYYY-Www` format (mainly for non-interactive startup)
-- `POLL_CRON` - weekly schedule cron (used in `auto` mode)
-- `TIMEZONE` - timezone used for scheduling and display
-- `SLOT_TEMPLATE_JSON` - optional JSON array for custom weekly slots (`weekday`, `hour`, `minute`)
-- `SLOT_TEMPLATE_PATH` - optional path to JSON file with custom weekly slots
-- `POLL_CLOSE_HOURS` - auto-close timeout
-- `REQUIRED_VOTERS` - quorum threshold
-- `ALLOW_INSECURE_CHROMIUM` - disable Chromium sandbox (not recommended)
-- `COMMAND_RATE_LIMIT_COUNT`, `COMMAND_RATE_LIMIT_WINDOW_MS` - anti-flood controls
-- `COMMAND_MAX_LENGTH` - max accepted command payload length
-- `HEALTH_SERVER_PORT` - optional HTTP port for `/health/live`, `/health/ready`, `/metrics`
-
-`SLOT_TEMPLATE_JSON` and `SLOT_TEMPLATE_PATH` are mutually exclusive. If neither is set, the default weekday/weekend template is used.
+- Copy `.env.example` to `.env` and change required values (`GROUP_ID`, `OWNER_PHONE`, `ALLOWED_VOTERS`).
+- Use `npm run doctor` after edits to validate your configuration before startup.
 
 ## Development
 
