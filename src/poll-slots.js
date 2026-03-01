@@ -14,6 +14,59 @@ const SLOT_TEMPLATE = [
   { weekday: 7, hour: 20, minute: 0 }
 ];
 
+function describeValue(value) {
+  return typeof value === 'string' ? `"${value}"` : String(value);
+}
+
+function parseTemplateField(sourceName, index, fieldName, value, min, max) {
+  if (!Number.isInteger(value)) {
+    throw new Error(
+      `${sourceName}[${index}].${fieldName} must be an integer between ${min} and ${max}; got ${describeValue(
+        value
+      )}.`
+    );
+  }
+
+  if (value < min || value > max) {
+    throw new Error(
+      `${sourceName}[${index}].${fieldName} must be between ${min} and ${max}; got ${value}.`
+    );
+  }
+
+  return value;
+}
+
+/**
+ * Validate and normalize slot-template input.
+ *
+ * @param {*} template - Candidate template value.
+ * @param {string} [sourceName='slot template'] - Source name used in error messages.
+ * @returns {{weekday:number, hour:number, minute:number}[]} Normalized template.
+ */
+function validateSlotTemplate(template, sourceName = 'slot template') {
+  if (!Array.isArray(template)) {
+    throw new Error(`${sourceName} must be a JSON array.`);
+  }
+
+  if (template.length === 0) {
+    throw new Error(`${sourceName} must contain at least one slot definition.`);
+  }
+
+  return template.map((slot, index) => {
+    if (!slot || typeof slot !== 'object' || Array.isArray(slot)) {
+      throw new Error(
+        `${sourceName}[${index}] must be an object with weekday, hour, and minute fields.`
+      );
+    }
+
+    return {
+      weekday: parseTemplateField(sourceName, index, 'weekday', slot.weekday, 1, 7),
+      hour: parseTemplateField(sourceName, index, 'hour', slot.hour, 0, 23),
+      minute: parseTemplateField(sourceName, index, 'minute', slot.minute, 0, 59)
+    };
+  });
+}
+
 /**
  * Builds a canonical week key from an ISO week-year and week number.
  * @param {number} weekYear - The ISO week-numbering year (e.g., 2024).
@@ -179,6 +232,7 @@ function formatWeekDateRangeLabel(timezone, weekYear, weekNumber) {
  * @param {string} timezone - IANA timezone identifier (e.g., "America/Los_Angeles").
  * @param {number} weekYear - ISO week-numbering year.
  * @param {number} weekNumber - ISO week number (1–53).
+ * @param {{weekday:number, hour:number, minute:number}[]} [slotTemplate=SLOT_TEMPLATE] - Slot template to use.
  * @returns {Array<Object>} An array of slot option objects. Each object contains:
  *   - index {number} : position of the slot in the template.
  *   - label {string} : human-readable weekday/time and abbreviated date (e.g., "Mon 12:00 (Feb 3)").
@@ -187,8 +241,8 @@ function formatWeekDateRangeLabel(timezone, weekYear, weekNumber) {
  *   - hour {number} : hour of day (0–23).
  *   - minute {number} : minute of hour (0–59).
  */
-function buildOptionsForWeek(timezone, weekYear, weekNumber) {
-  return SLOT_TEMPLATE.map((slot, index) => {
+function buildOptionsForWeek(timezone, weekYear, weekNumber, slotTemplate = SLOT_TEMPLATE) {
+  return slotTemplate.map((slot, index) => {
     const dt = DateTime.fromObject(
       {
         weekYear,
@@ -235,6 +289,7 @@ function scheduledWeeklyRunForWeek(timezone, weekYear, weekNumber) {
 
 module.exports = {
   SLOT_TEMPLATE,
+  validateSlotTemplate,
   buildWeekKey,
   parseWeekSpecifier,
   currentWeekContext,

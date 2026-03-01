@@ -11,7 +11,7 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 - Creates one weekly poll in a target group.
   - Default startup mode (`WEEK_SELECTION_MODE=interactive`) asks which ISO week to run (for example `2026 W10 March 2 - March 8`).
   - Optional auto mode (`WEEK_SELECTION_MODE=auto`) uses `POLL_CRON` (default Monday 12:00) and startup catch-up.
-- Uses fixed slot options:
+- Uses default slot options (customizable via env/file):
   - Weekdays: Mon-Fri 20:00
   - Weekends: Sat/Sun 10:00, 15:00, 20:00
 - Accepts multi-choice voting from an allowlist.
@@ -215,12 +215,16 @@ See `.env.example` for the complete list. Most relevant settings:
 - `TARGET_WEEK` - optional startup week override in `YYYY-Www` format (mainly for non-interactive startup)
 - `POLL_CRON` - weekly schedule cron (used in `auto` mode)
 - `TIMEZONE` - timezone used for scheduling and display
+- `SLOT_TEMPLATE_JSON` - optional JSON array for custom weekly slots (`weekday`, `hour`, `minute`)
+- `SLOT_TEMPLATE_PATH` - optional path to JSON file with custom weekly slots
 - `POLL_CLOSE_HOURS` - auto-close timeout
 - `REQUIRED_VOTERS` - quorum threshold
 - `ALLOW_INSECURE_CHROMIUM` - disable Chromium sandbox (not recommended)
 - `COMMAND_RATE_LIMIT_COUNT`, `COMMAND_RATE_LIMIT_WINDOW_MS` - anti-flood controls
 - `COMMAND_MAX_LENGTH` - max accepted command payload length
 - `HEALTH_SERVER_PORT` - optional HTTP port for `/health/live`, `/health/ready`, `/metrics`
+
+`SLOT_TEMPLATE_JSON` and `SLOT_TEMPLATE_PATH` are mutually exclusive. If neither is set, the default weekday/weekend template is used.
 
 ## Development
 

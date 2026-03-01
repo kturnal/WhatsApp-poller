@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const { loadConfig, normalizeJid } = require('../../src/config');
 
@@ -34,6 +37,8 @@ const baseEnv = {
   ALLOWED_VOTERS: '905551111111,905552222222,905553333333,905554444444,905555555555',
   TIMEZONE: 'Europe/Istanbul',
   REQUIRED_VOTERS: '5',
+  SLOT_TEMPLATE_JSON: undefined,
+  SLOT_TEMPLATE_PATH: undefined,
   WEEK_SELECTION_MODE: undefined,
   TARGET_WEEK: undefined
 };
@@ -69,6 +74,8 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       assert.equal(config.commandRateLimitWindowMs, 60000);
       assert.equal(config.commandMaxLength, 256);
       assert.equal(config.healthServerPort, null);
+      assert.equal(config.slotTemplate.length, 11);
+      assert.equal(config.slotTemplateSource, 'default');
       assert.equal(config.weekSelectionMode, 'interactive');
       assert.equal(config.targetWeek, null);
     }
@@ -152,6 +159,96 @@ test('loadConfig rejects invalid TARGET_WEEK format', () => {
     },
     () => {
       assert.throws(() => loadConfig(), /TARGET_WEEK must reference a valid ISO week/);
+    }
+  );
+});
+
+test('loadConfig parses SLOT_TEMPLATE_JSON', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      SLOT_TEMPLATE_JSON: JSON.stringify([
+        { weekday: 2, hour: 19, minute: 30 },
+        { weekday: 6, hour: 11, minute: 0 }
+      ])
+    },
+    () => {
+      const config = loadConfig();
+
+      assert.deepEqual(config.slotTemplate, [
+        { weekday: 2, hour: 19, minute: 30 },
+        { weekday: 6, hour: 11, minute: 0 }
+      ]);
+      assert.equal(config.slotTemplateSource, 'SLOT_TEMPLATE_JSON');
+    }
+  );
+});
+
+test('loadConfig parses SLOT_TEMPLATE_PATH', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-slot-template-'));
+  const templatePath = path.join(tempDir, 'slots.json');
+  fs.writeFileSync(
+    templatePath,
+    JSON.stringify([
+      { weekday: 3, hour: 18, minute: 0 },
+      { weekday: 7, hour: 13, minute: 45 }
+    ]),
+    'utf8'
+  );
+
+  try {
+    withEnv(
+      {
+        ...baseEnv,
+        SLOT_TEMPLATE_PATH: templatePath
+      },
+      () => {
+        const config = loadConfig();
+
+        assert.deepEqual(config.slotTemplate, [
+          { weekday: 3, hour: 18, minute: 0 },
+          { weekday: 7, hour: 13, minute: 45 }
+        ]);
+        assert.equal(config.slotTemplateSource, templatePath);
+      }
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig rejects invalid SLOT_TEMPLATE_* combinations and values', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      SLOT_TEMPLATE_JSON: '[]',
+      SLOT_TEMPLATE_PATH: './slots.json'
+    },
+    () => {
+      assert.throws(
+        () => loadConfig(),
+        /Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH/
+      );
+    }
+  );
+
+  withEnv(
+    {
+      ...baseEnv,
+      SLOT_TEMPLATE_JSON: '{"not":"an-array"}'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /SLOT_TEMPLATE_JSON must be a JSON array/);
+    }
+  );
+
+  withEnv(
+    {
+      ...baseEnv,
+      SLOT_TEMPLATE_JSON: '[{"weekday":8,"hour":20,"minute":0}]'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /weekday must be between 1 and 7/);
     }
   );
 });
