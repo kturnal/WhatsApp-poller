@@ -217,7 +217,7 @@ test('loadConfig parses SLOT_TEMPLATE_PATH', () => {
   }
 });
 
-test('loadConfig rejects invalid SLOT_TEMPLATE_* combinations and values', () => {
+test('loadConfig rejects when both SLOT_TEMPLATE_JSON and SLOT_TEMPLATE_PATH set', () => {
   withEnv(
     {
       ...baseEnv,
@@ -228,7 +228,9 @@ test('loadConfig rejects invalid SLOT_TEMPLATE_* combinations and values', () =>
       assert.throws(() => loadConfig(), /Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH/);
     }
   );
+});
 
+test('loadConfig rejects when SLOT_TEMPLATE_JSON is not an array', () => {
   withEnv(
     {
       ...baseEnv,
@@ -238,7 +240,9 @@ test('loadConfig rejects invalid SLOT_TEMPLATE_* combinations and values', () =>
       assert.throws(() => loadConfig(), /SLOT_TEMPLATE_JSON must be a JSON array/);
     }
   );
+});
 
+test('loadConfig rejects out-of-range weekday in SLOT_TEMPLATE_JSON', () => {
   withEnv(
     {
       ...baseEnv,
