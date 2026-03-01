@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.3.0...whatsapp-poller-v0.3.1) (2026-03-01)
+
+
+### Bug Fixes
+
+* ignore nested DATA_DIR symlinks during hardening ([cc32a7b](https://github.com/kturnal/WhatsApp-poller/commit/cc32a7ba31db772a59fc23db49b707fd0216ce14))
+* ignore nested DATA_DIR symlinks during hardening ([3ba5b92](https://github.com/kturnal/WhatsApp-poller/commit/3ba5b9204ac1a6010d381d3073e091a9d030436c))
+* prevent startup failure from Chromium session symlinks ([5592b8d](https://github.com/kturnal/WhatsApp-poller/commit/5592b8de51e528b7c4400c94960d96630ebfb606))
+* resolve [@lid](https://github.com/lid) voter mapping and command guard parsing ([f93f9d0](https://github.com/kturnal/WhatsApp-poller/commit/f93f9d098ca864e8eba38e7bc9ed7c5b5df572e4))
+
 ## [0.3.0](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.2.0...whatsapp-poller-v0.3.0) (2026-03-01)
 
 ### Features
