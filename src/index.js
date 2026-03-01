@@ -145,6 +145,7 @@ class GameSchedulerBot {
     this.tieTimers = new Map();
     this.pollLocks = new Set();
     this.commandWindows = new Map();
+    this.voterAliasMap = new Map();
     this.outboxTimer = null;
     this.outboxDrainInProgress = false;
     this.observability =
@@ -471,7 +472,7 @@ class GameSchedulerBot {
     };
 
     for (const pollVote of pollVotes) {
-      const normalized = this.normalizeVoteUpdateForPoll(poll, pollVote);
+      const normalized = await this.normalizeVoteUpdateForPoll(poll, pollVote);
       if (normalized.status !== 'ok') {
         if (normalized.reason === 'missing_voter') {
           stats.skippedMissingVoter += 1;
@@ -1037,7 +1038,68 @@ class GameSchedulerBot {
     };
   }
 
-  normalizeVoteUpdateForPoll(poll, voteUpdate) {
+  async resolveAllowlistedVoterJid(voterRaw, normalizedVoterJid) {
+    if (this.config.allowedVoterSet.has(normalizedVoterJid)) {
+      return normalizedVoterJid;
+    }
+
+    if (typeof voterRaw !== 'string') {
+      return null;
+    }
+
+    const voterText = voterRaw.trim().toLowerCase();
+    if (!voterText.endsWith('@lid')) {
+      return null;
+    }
+
+    const cached = this.voterAliasMap.get(voterText);
+    if (cached && this.config.allowedVoterSet.has(cached)) {
+      return cached;
+    }
+
+    if (typeof this.client.getContactLidAndPhone !== 'function') {
+      return null;
+    }
+
+    let lookupRows;
+    try {
+      lookupRows = await this.client.getContactLidAndPhone([voterText]);
+    } catch (error) {
+      log(
+        'WARN',
+        'Failed to resolve @lid voter identity.',
+        errorMetadata(error, {
+          voterJid: voterText
+        })
+      );
+      return null;
+    }
+
+    const lookup = Array.isArray(lookupRows) ? lookupRows[0] : null;
+    if (!lookup?.pn) {
+      return null;
+    }
+
+    let resolvedPhoneJid;
+    try {
+      resolvedPhoneJid = normalizeJid(lookup.pn);
+    } catch {
+      return null;
+    }
+
+    if (!this.config.allowedVoterSet.has(resolvedPhoneJid)) {
+      return null;
+    }
+
+    this.voterAliasMap.set(voterText, resolvedPhoneJid);
+    if (typeof lookup.lid === 'string' && lookup.lid.trim()) {
+      this.voterAliasMap.set(lookup.lid.trim().toLowerCase(), resolvedPhoneJid);
+    }
+
+    return resolvedPhoneJid;
+  }
+
+  async normalizeVoteUpdateForPoll(poll, voteUpdate) {
     const voterRaw = voteUpdate?.voter;
     if (!voterRaw) {
       return { status: 'skip', reason: 'missing_voter' };
@@ -1050,7 +1112,8 @@ class GameSchedulerBot {
       return { status: 'skip', reason: 'invalid_voter' };
     }
 
-    if (!this.config.allowedVoterSet.has(voterJid)) {
+    const allowlistedVoterJid = await this.resolveAllowlistedVoterJid(voterRaw, voterJid);
+    if (!allowlistedVoterJid) {
       return {
         status: 'skip',
         reason: 'not_allowlisted',
@@ -1065,7 +1128,7 @@ class GameSchedulerBot {
 
     return {
       status: 'ok',
-      voterJid,
+      voterJid: allowlistedVoterJid,
       selectedOptions,
       discardedLocalIds
     };
@@ -1082,7 +1145,7 @@ class GameSchedulerBot {
       return;
     }
 
-    const normalized = this.normalizeVoteUpdateForPoll(poll, voteUpdate);
+    const normalized = await this.normalizeVoteUpdateForPoll(poll, voteUpdate);
     if (normalized.status !== 'ok') {
       if (normalized.reason === 'not_allowlisted') {
         log('INFO', 'Ignoring vote from non-allowlisted participant.', {
@@ -1244,6 +1307,11 @@ class GameSchedulerBot {
       return;
     }
 
+    const firstToken = body.split(/\s+/, 1)[0];
+    if (!firstToken || firstToken.toLowerCase() !== this.config.commandPrefix.toLowerCase()) {
+      return;
+    }
+
     if (body.length > this.config.commandMaxLength) {
       log('WARN', 'Ignoring command: payload is too long.', {
         bodyLength: body.length,
@@ -1253,19 +1321,11 @@ class GameSchedulerBot {
     }
 
     const parts = body.split(/\s+/).filter(Boolean);
-    if (parts.length === 0) {
-      return;
-    }
-
     if (parts.length > MAX_COMMAND_TOKENS) {
       log('WARN', 'Ignoring command: too many tokens.', {
         tokenCount: parts.length,
         limit: MAX_COMMAND_TOKENS
       });
-      return;
-    }
-
-    if (parts[0].toLowerCase() !== this.config.commandPrefix.toLowerCase()) {
       return;
     }
 
