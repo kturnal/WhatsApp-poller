@@ -78,8 +78,16 @@ function checkDataDirPermissions(dataDir) {
 }
 
 function checkConfigConsistency(config) {
-  if (!cron.validate(config.pollCron)) {
-    throw new Error(`Invalid POLL_CRON expression: ${config.pollCron}`);
+  if (config.weekSelectionMode === 'auto') {
+    if (!cron.validate(config.pollCron)) {
+      throw new Error(`Invalid POLL_CRON expression: ${config.pollCron}`);
+    }
+    printResult('PASS', `POLL_CRON is valid for auto mode (${config.pollCron}).`);
+  } else {
+    printResult(
+      'PASS',
+      'Interactive week-selection mode enabled; POLL_CRON is ignored at startup.'
+    );
   }
 
   if (!config.allowedVoterSet.has(config.ownerJid)) {

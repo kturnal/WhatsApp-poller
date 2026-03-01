@@ -1,5 +1,6 @@
 const path = require('node:path');
 const { DateTime } = require('luxon');
+const { parseWeekSpecifier } = require('./poll-slots');
 
 /**
  * Retrieve and validate a required environment variable.
@@ -135,7 +136,7 @@ function validateTimezone(timezone) {
  * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
  * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
  *
- * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, weekSelectionMode: 'interactive'|'auto', targetWeek: string|null, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
  * - `groupId`: WhatsApp group JID ending with `@g.us`.
  * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
  * - `allowedVoters`: Array of normalized voter JIDs.
@@ -146,6 +147,8 @@ function validateTimezone(timezone) {
  * - `tieOverrideHours`: Hours after which a tie can be overridden (>= 1).
  * - `pollCron`: Cron expression for scheduled polls.
  * - `pollQuestion`: Default poll question text.
+ * - `weekSelectionMode`: Startup poll selection mode (`interactive` or `auto`).
+ * - `targetWeek`: Optional explicit startup week key in `YYYY-Www` format.
  * - `clientId`: Identifier for the client.
  * - `dataDir`: Absolute path to the data directory.
  * - `headless`: Whether client runs headless (`true` or `false`).
@@ -193,6 +196,22 @@ function loadConfig() {
   const pollQuestion =
     process.env.POLL_QUESTION?.trim() ||
     `Weekly game night - pick all slots you can join (${timezone})`;
+  const rawWeekSelectionMode =
+    process.env.WEEK_SELECTION_MODE?.trim().toLowerCase() || 'interactive';
+  if (!['interactive', 'auto'].includes(rawWeekSelectionMode)) {
+    throw new Error('WEEK_SELECTION_MODE must be either "interactive" or "auto".');
+  }
+
+  const targetWeekRaw = process.env.TARGET_WEEK?.trim() || null;
+  if (targetWeekRaw !== null) {
+    if (!/^\d{4}-W\d{2}$/.test(targetWeekRaw)) {
+      throw new Error('TARGET_WEEK must match YYYY-Www (example: 2026-W10).');
+    }
+
+    if (!parseWeekSpecifier(targetWeekRaw)) {
+      throw new Error('TARGET_WEEK must reference a valid ISO week.');
+    }
+  }
 
   const clientId = process.env.CLIENT_ID?.trim() || 'game-scheduler';
   const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR?.trim() || 'data');
@@ -238,6 +257,8 @@ function loadConfig() {
     tieOverrideHours,
     pollCron,
     pollQuestion,
+    weekSelectionMode: rawWeekSelectionMode,
+    targetWeek: targetWeekRaw,
     clientId,
     dataDir,
     headless,

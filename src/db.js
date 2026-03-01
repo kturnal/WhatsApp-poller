@@ -325,6 +325,35 @@ class PollDatabase {
     return Number(result.lastInsertRowid);
   }
 
+  replacePollInPlace({ pollId, pollMessageId, question, options, createdAt, closesAt }) {
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM poll_votes WHERE poll_id = ?').run(pollId);
+
+      const stmt = this.db.prepare(`
+        UPDATE polls
+        SET
+          poll_message_id = ?,
+          question = ?,
+          options_json = ?,
+          status = 'OPEN',
+          created_at = ?,
+          closes_at = ?,
+          closed_at = NULL,
+          close_reason = NULL,
+          tie_deadline_at = NULL,
+          tie_option_indices_json = NULL,
+          winning_option_idx = NULL,
+          winner_vote_count = NULL,
+          announced_at = NULL
+        WHERE id = ?
+      `);
+
+      stmt.run(pollMessageId, question, JSON.stringify(options), createdAt, closesAt, pollId);
+    });
+
+    tx();
+  }
+
   getPollById(pollId) {
     const stmt = this.db.prepare('SELECT * FROM polls WHERE id = ? LIMIT 1');
     return this.#mapPoll(stmt.get(pollId));

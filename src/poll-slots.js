@@ -25,6 +25,66 @@ function buildWeekKey(weekYear, weekNumber) {
 }
 
 /**
+ * Parse a week specifier from user/operator input.
+ *
+ * Supported input formats:
+ * - `YYYY-Www` (e.g. `2026-W10`)
+ * - `YYYY Www` (e.g. `2026 W10`)
+ *
+ * @param {string} raw - Raw input string.
+ * @returns {{weekYear:number, weekNumber:number, weekKey:string}|null}
+ */
+function parseWeekSpecifier(raw) {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  const value = raw.trim();
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/^(\d{4})\s*(?:-| )\s*[Ww](\d{1,2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const weekYear = Number.parseInt(match[1], 10);
+  const weekNumber = Number.parseInt(match[2], 10);
+
+  if (!Number.isInteger(weekYear) || !Number.isInteger(weekNumber)) {
+    return null;
+  }
+
+  if (weekNumber < 1 || weekNumber > 53) {
+    return null;
+  }
+
+  const monday = DateTime.fromObject(
+    {
+      weekYear,
+      weekNumber,
+      weekday: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0
+    },
+    { zone: 'UTC' }
+  );
+
+  if (!monday.isValid || monday.weekYear !== weekYear || monday.weekNumber !== weekNumber) {
+    return null;
+  }
+
+  return {
+    weekYear,
+    weekNumber,
+    weekKey: buildWeekKey(weekYear, weekNumber)
+  };
+}
+
+/**
  * Produce week-related context for the current moment in a given timezone.
  *
  * @param {string} timezone - IANA timezone identifier used to construct the DateTime (e.g., "America/Los_Angeles").
@@ -43,6 +103,74 @@ function currentWeekContext(timezone, nowMillis = Date.now()) {
     weekNumber: now.weekNumber,
     weekKey: buildWeekKey(now.weekYear, now.weekNumber)
   };
+}
+
+/**
+ * Returns whether a target ISO week is the current week or in the future for a timezone.
+ * @param {string} timezone - IANA timezone.
+ * @param {number} weekYear - ISO week-numbering year.
+ * @param {number} weekNumber - ISO week number (1-53).
+ * @param {number} [nowMillis=Date.now()] - Epoch milliseconds for "now".
+ * @returns {boolean}
+ */
+function isCurrentOrFutureWeek(timezone, weekYear, weekNumber, nowMillis = Date.now()) {
+  const now = DateTime.fromMillis(nowMillis, { zone: timezone });
+  const currentWeekStart = DateTime.fromObject(
+    {
+      weekYear: now.weekYear,
+      weekNumber: now.weekNumber,
+      weekday: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0
+    },
+    { zone: timezone }
+  );
+
+  const targetWeekStart = DateTime.fromObject(
+    {
+      weekYear,
+      weekNumber,
+      weekday: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0
+    },
+    { zone: timezone }
+  );
+
+  return targetWeekStart.isValid && targetWeekStart.toMillis() >= currentWeekStart.toMillis();
+}
+
+/**
+ * Build an operator-facing week label with date range.
+ * Example: `2026 W10 March 2 - March 8`.
+ *
+ * @param {string} timezone - IANA timezone.
+ * @param {number} weekYear - ISO week-numbering year.
+ * @param {number} weekNumber - ISO week number (1-53).
+ * @returns {string}
+ */
+function formatWeekDateRangeLabel(timezone, weekYear, weekNumber) {
+  const weekStart = DateTime.fromObject(
+    {
+      weekYear,
+      weekNumber,
+      weekday: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0
+    },
+    { zone: timezone }
+  );
+
+  const weekEnd = weekStart.plus({ days: 6 });
+  return `${weekYear} W${String(weekNumber).padStart(2, '0')} ${weekStart.toFormat(
+    'LLLL d'
+  )} - ${weekEnd.toFormat('LLLL d')}`;
 }
 
 /**
@@ -108,7 +236,10 @@ function scheduledWeeklyRunForWeek(timezone, weekYear, weekNumber) {
 module.exports = {
   SLOT_TEMPLATE,
   buildWeekKey,
+  parseWeekSpecifier,
   currentWeekContext,
+  isCurrentOrFutureWeek,
+  formatWeekDateRangeLabel,
   buildOptionsForWeek,
   scheduledWeeklyRunForWeek
 };
