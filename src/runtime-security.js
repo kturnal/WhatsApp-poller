@@ -28,11 +28,17 @@ function applyMode(targetPath, expectedMode, stats, remediations) {
   });
 }
 
-function walkSecure(rootPath, remediations) {
+function walkSecure(rootPath, remediations, dataDir) {
   const stats = fs.lstatSync(rootPath);
 
   if (stats.isSymbolicLink()) {
-    throw new Error(`Symbolic links are not allowed inside DATA_DIR: ${rootPath}`);
+    if (rootPath === dataDir) {
+      throw new Error(`DATA_DIR cannot be a symbolic link: ${rootPath}`);
+    }
+
+    // Chromium profile internals may create lock/version symlinks in session storage.
+    // Ignore nested symlinks and never follow them.
+    return;
   }
 
   if (stats.isDirectory()) {
@@ -40,7 +46,7 @@ function walkSecure(rootPath, remediations) {
 
     const entries = fs.readdirSync(rootPath, { withFileTypes: true });
     for (const entry of entries) {
-      walkSecure(path.join(rootPath, entry.name), remediations);
+      walkSecure(path.join(rootPath, entry.name), remediations, dataDir);
     }
 
     return;
@@ -59,7 +65,7 @@ function enforceSecureRuntimePermissions(dataDir) {
   fs.mkdirSync(dataDir, { recursive: true, mode: DIRECTORY_MODE });
 
   const remediations = [];
-  walkSecure(dataDir, remediations);
+  walkSecure(dataDir, remediations, dataDir);
   return remediations;
 }
 
