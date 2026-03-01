@@ -65,6 +65,8 @@ function createConfig(dataDir, overrides = {}) {
     tieOverrideHours: 6,
     pollCron: '0 12 * * 1',
     pollQuestion: 'Weekly game night test poll',
+    weekSelectionMode: 'auto',
+    targetWeek: null,
     clientId: 'unit-test-client',
     dataDir,
     headless: true,
@@ -289,4 +291,195 @@ test('sendOutboxPayload times out when sendGroupMessage stalls', async (t) => {
     }),
     /Outbox payload send timed out after 25ms\./
   );
+});
+
+test('interactive startup mode skips selection when an active poll exists', async (t) => {
+  let resolverCalled = false;
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'interactive'
+    },
+    {
+      startupWeekSelectionResolver: async () => {
+        resolverCalled = true;
+        return {
+          action: 'create',
+          weekYear: 2026,
+          weekNumber: 10,
+          weekKey: '2026-W10',
+          weekLabel: '2026 W10 March 2 - March 8',
+          existingPollId: null
+        };
+      }
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const now = Date.now();
+  harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W09',
+    pollMessageId: 'active-poll',
+    question: 'q',
+    options: [{ label: 'Mon', localId: 'opt-0' }],
+    createdAt: now,
+    closesAt: now + 3600000
+  });
+
+  await harness.bot.onReady();
+
+  assert.equal(resolverCalled, false);
+});
+
+test('interactive startup mode creates selected week poll and does not start cron', async (t) => {
+  let cronStarted = false;
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'interactive'
+    },
+    {
+      startupWeekSelectionResolver: async () => ({
+        action: 'create',
+        weekYear: 2026,
+        weekNumber: 10,
+        weekKey: '2026-W10',
+        weekLabel: '2026 W10 March 2 - March 8',
+        existingPollId: null
+      })
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  harness.bot.startCronIfNeeded = () => {
+    cronStarted = true;
+  };
+
+  await harness.bot.onReady();
+
+  const poll = harness.bot.db.getPollByWeekKey(harness.config.groupId, '2026-W10');
+  assert.ok(poll);
+  assert.equal(cronStarted, false);
+});
+
+test('interactive startup mode respects skip action when selected week already exists', async (t) => {
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'interactive'
+    },
+    {
+      startupWeekSelectionResolver: async () => ({
+        action: 'skip',
+        weekYear: 2026,
+        weekNumber: 10,
+        weekKey: '2026-W10',
+        weekLabel: '2026 W10 March 2 - March 8',
+        existingPollId: 1
+      })
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.onReady();
+
+  const poll = harness.bot.db.getPollByWeekKey(harness.config.groupId, '2026-W10');
+  assert.equal(poll, null);
+});
+
+test('interactive startup mode replaces existing week poll in place and clears votes', async (t) => {
+  let existingPollId = null;
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'interactive'
+    },
+    {
+      startupWeekSelectionResolver: async () => ({
+        action: 'replace',
+        weekYear: 2026,
+        weekNumber: 10,
+        weekKey: '2026-W10',
+        weekLabel: '2026 W10 March 2 - March 8',
+        existingPollId
+      })
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const now = Date.now();
+  existingPollId = harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W10',
+    pollMessageId: 'old-message-id',
+    question: 'old question',
+    options: [{ label: 'Old', localId: 'old-opt' }],
+    createdAt: now - 3600000,
+    closesAt: now - 1800000
+  });
+
+  harness.bot.db.upsertVote({
+    pollId: existingPollId,
+    voterJid: '905551111111@c.us',
+    selectedOptions: [0],
+    updatedAt: now - 3500000
+  });
+  harness.bot.db.setAnnounced({
+    pollId: existingPollId,
+    closeReason: 'deadline',
+    closedAt: now - 1700000,
+    announcedAt: now - 1700000,
+    winnerIdx: 0,
+    winnerVotes: 1
+  });
+
+  await harness.bot.onReady();
+
+  const replaced = harness.bot.db.getPollByWeekKey(harness.config.groupId, '2026-W10');
+  assert.ok(replaced);
+  assert.equal(replaced.id, existingPollId);
+  assert.equal(replaced.status, 'OPEN');
+  assert.equal(replaced.closeReason, null);
+  assert.notEqual(replaced.pollMessageId, 'old-message-id');
+
+  const votes = harness.bot.db.getVotesByPollId(existingPollId);
+  assert.equal(votes.length, 0);
+});
+
+test('auto mode keeps cron/catch-up path and does not invoke startup week selector', async (t) => {
+  let cronCalled = false;
+  let catchupCalled = false;
+  let selectorCalled = false;
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'auto'
+    },
+    {
+      startupWeekSelectionResolver: async () => {
+        selectorCalled = true;
+        return null;
+      }
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  harness.bot.startCronIfNeeded = () => {
+    cronCalled = true;
+  };
+  harness.bot.createCurrentWeekPollIfMissed = async () => {
+    catchupCalled = true;
+  };
+
+  await harness.bot.onReady();
+
+  assert.equal(cronCalled, true);
+  assert.equal(catchupCalled, true);
+  assert.equal(selectorCalled, false);
 });

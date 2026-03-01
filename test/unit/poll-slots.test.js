@@ -6,6 +6,9 @@ const {
   buildOptionsForWeek,
   buildWeekKey,
   currentWeekContext,
+  formatWeekDateRangeLabel,
+  isCurrentOrFutureWeek,
+  parseWeekSpecifier,
   scheduledWeeklyRunForWeek
 } = require('../../src/poll-slots');
 
@@ -36,4 +39,32 @@ test('scheduledWeeklyRunForWeek points to Monday 12:00 in configured timezone', 
   assert.equal(scheduled.hour, 12);
   assert.equal(scheduled.minute, 0);
   assert.equal(scheduled.zoneName, 'Europe/Istanbul');
+});
+
+test('parseWeekSpecifier parses supported formats and rejects invalid values', () => {
+  assert.deepEqual(parseWeekSpecifier('2026-W10'), {
+    weekYear: 2026,
+    weekNumber: 10,
+    weekKey: '2026-W10'
+  });
+  assert.deepEqual(parseWeekSpecifier('2026 W9'), {
+    weekYear: 2026,
+    weekNumber: 9,
+    weekKey: '2026-W09'
+  });
+  assert.equal(parseWeekSpecifier('2026-W54'), null);
+  assert.equal(parseWeekSpecifier('2026-W00'), null);
+  assert.equal(parseWeekSpecifier('bad-input'), null);
+});
+
+test('formatWeekDateRangeLabel renders long month names', () => {
+  const label = formatWeekDateRangeLabel('Europe/Istanbul', 2026, 10);
+  assert.equal(label, '2026 W10 March 2 - March 8');
+});
+
+test('isCurrentOrFutureWeek allows current/future and rejects past week', () => {
+  const nowMillis = Date.UTC(2026, 2, 1, 9, 0, 0); // Sunday, Mar 1 2026 -> ISO week 9
+  assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 9, nowMillis), true);
+  assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 10, nowMillis), true);
+  assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 8, nowMillis), false);
 });

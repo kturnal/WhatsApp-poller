@@ -33,7 +33,9 @@ const baseEnv = {
   OWNER_PHONE: '+90 555 111 1111',
   ALLOWED_VOTERS: '905551111111,905552222222,905553333333,905554444444,905555555555',
   TIMEZONE: 'Europe/Istanbul',
-  REQUIRED_VOTERS: '5'
+  REQUIRED_VOTERS: '5',
+  WEEK_SELECTION_MODE: undefined,
+  TARGET_WEEK: undefined
 };
 
 test('normalizeJid converts phone-like values to contact JID', () => {
@@ -67,6 +69,8 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       assert.equal(config.commandRateLimitWindowMs, 60000);
       assert.equal(config.commandMaxLength, 256);
       assert.equal(config.healthServerPort, null);
+      assert.equal(config.weekSelectionMode, 'interactive');
+      assert.equal(config.targetWeek, null);
     }
   );
 });
@@ -93,7 +97,9 @@ test('loadConfig parses explicit security and command settings', () => {
       COMMAND_RATE_LIMIT_COUNT: '3',
       COMMAND_RATE_LIMIT_WINDOW_MS: '30000',
       COMMAND_MAX_LENGTH: '128',
-      HEALTH_SERVER_PORT: '8080'
+      HEALTH_SERVER_PORT: '8080',
+      WEEK_SELECTION_MODE: 'auto',
+      TARGET_WEEK: '2026-W10'
     },
     () => {
       const config = loadConfig();
@@ -105,6 +111,8 @@ test('loadConfig parses explicit security and command settings', () => {
       assert.equal(config.commandRateLimitWindowMs, 30000);
       assert.equal(config.commandMaxLength, 128);
       assert.equal(config.healthServerPort, 8080);
+      assert.equal(config.weekSelectionMode, 'auto');
+      assert.equal(config.targetWeek, '2026-W10');
     }
   );
 });
@@ -117,6 +125,33 @@ test('loadConfig rejects invalid HEALTH_SERVER_PORT range', () => {
     },
     () => {
       assert.throws(() => loadConfig(), /HEALTH_SERVER_PORT must be between 1 and 65535/);
+    }
+  );
+});
+
+test('loadConfig rejects invalid WEEK_SELECTION_MODE', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      WEEK_SELECTION_MODE: 'manual'
+    },
+    () => {
+      assert.throws(
+        () => loadConfig(),
+        /WEEK_SELECTION_MODE must be either "interactive" or "auto"/
+      );
+    }
+  );
+});
+
+test('loadConfig rejects invalid TARGET_WEEK format', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      TARGET_WEEK: '2026-W99'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /TARGET_WEEK must reference a valid ISO week/);
     }
   );
 });
