@@ -96,6 +96,15 @@ function checkConfigConsistency(config) {
     printResult('PASS', 'OWNER_PHONE exists in ALLOWED_VOTERS.');
   }
 
+  if (config.slotTemplateSource === 'default') {
+    printResult('PASS', `Using default slot template (${config.slotTemplate.length} slots).`);
+  } else {
+    printResult(
+      'PASS',
+      `Using custom slot template from ${config.slotTemplateSource} (${config.slotTemplate.length} slots).`
+    );
+  }
+
   if (config.allowInsecureChromium) {
     printResult('WARN', 'ALLOW_INSECURE_CHROMIUM=true disables Chromium sandbox protections.');
   } else {

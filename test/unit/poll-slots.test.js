@@ -9,7 +9,8 @@ const {
   formatWeekDateRangeLabel,
   isCurrentOrFutureWeek,
   parseWeekSpecifier,
-  scheduledWeeklyRunForWeek
+  scheduledWeeklyRunForWeek,
+  validateSlotTemplate
 } = require('../../src/poll-slots');
 
 test('buildWeekKey formats week identifiers', () => {
@@ -23,6 +24,21 @@ test('buildOptionsForWeek returns all template slots for given ISO week', () => 
   assert.match(options[0].label, /Mon 20:00/);
   assert.equal(options[0].weekday, 1);
   assert.equal(options[options.length - 1].weekday, 7);
+});
+
+test('buildOptionsForWeek supports custom slot templates', () => {
+  const customTemplate = [
+    { weekday: 2, hour: 19, minute: 30 },
+    { weekday: 5, hour: 21, minute: 0 }
+  ];
+  const options = buildOptionsForWeek('Europe/Istanbul', 2026, 8, customTemplate);
+
+  assert.equal(options.length, 2);
+  assert.equal(options[0].weekday, 2);
+  assert.equal(options[0].hour, 19);
+  assert.equal(options[0].minute, 30);
+  assert.match(options[0].label, /Tue 19:30/);
+  assert.equal(options[1].weekday, 5);
 });
 
 test('currentWeekContext includes ISO week key and timezone aware date', () => {
@@ -67,4 +83,32 @@ test('isCurrentOrFutureWeek allows current/future and rejects past week', () => 
   assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 9, nowMillis), true);
   assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 10, nowMillis), true);
   assert.equal(isCurrentOrFutureWeek('Europe/Istanbul', 2026, 8, nowMillis), false);
+});
+
+test('validateSlotTemplate normalizes valid templates', () => {
+  const normalized = validateSlotTemplate(
+    [
+      { weekday: 1, hour: 20, minute: 0 },
+      { weekday: 7, hour: 10, minute: 15 }
+    ],
+    'TEST_TEMPLATE'
+  );
+
+  assert.deepEqual(normalized, [
+    { weekday: 1, hour: 20, minute: 0 },
+    { weekday: 7, hour: 10, minute: 15 }
+  ]);
+});
+
+test('validateSlotTemplate rejects invalid structures and ranges', () => {
+  assert.throws(() => validateSlotTemplate({}, 'TEST_TEMPLATE'), /must be a JSON array/);
+  assert.throws(() => validateSlotTemplate([], 'TEST_TEMPLATE'), /at least one slot definition/);
+  assert.throws(
+    () => validateSlotTemplate([{ weekday: 8, hour: 20, minute: 0 }], 'TEST_TEMPLATE'),
+    /weekday must be between 1 and 7/
+  );
+  assert.throws(
+    () => validateSlotTemplate([{ weekday: 1, hour: '20', minute: 0 }], 'TEST_TEMPLATE'),
+    /hour must be an integer between 0 and 23/
+  );
 });

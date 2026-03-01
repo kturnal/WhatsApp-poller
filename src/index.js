@@ -638,7 +638,12 @@ class GameSchedulerBot {
     replacePollId = null,
     createdAt
   }) {
-    const options = buildOptionsForWeek(this.config.timezone, weekYear, weekNumber);
+    const options = buildOptionsForWeek(
+      this.config.timezone,
+      weekYear,
+      weekNumber,
+      this.config.slotTemplate
+    );
     const optionLabels = options.map((option) => option.label);
     let pollMessageId = null;
 
