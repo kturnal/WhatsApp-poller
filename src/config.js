@@ -149,10 +149,8 @@ function parseSlotTemplateJson(raw, sourceName) {
 function loadSlotTemplateConfig() {
   const slotTemplateJsonRaw = process.env.SLOT_TEMPLATE_JSON;
   const slotTemplatePathRaw = process.env.SLOT_TEMPLATE_PATH;
-  const hasJson =
-    typeof slotTemplateJsonRaw === 'string' && slotTemplateJsonRaw.trim().length > 0;
-  const hasPath =
-    typeof slotTemplatePathRaw === 'string' && slotTemplatePathRaw.trim().length > 0;
+  const hasJson = typeof slotTemplateJsonRaw === 'string' && slotTemplateJsonRaw.trim().length > 0;
+  const hasPath = typeof slotTemplatePathRaw === 'string' && slotTemplatePathRaw.trim().length > 0;
 
   if (hasJson && hasPath) {
     throw new Error('Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH.');

@@ -225,10 +225,7 @@ test('loadConfig rejects invalid SLOT_TEMPLATE_* combinations and values', () =>
       SLOT_TEMPLATE_PATH: './slots.json'
     },
     () => {
-      assert.throws(
-        () => loadConfig(),
-        /Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH/
-      );
+      assert.throws(() => loadConfig(), /Set only one of SLOT_TEMPLATE_JSON or SLOT_TEMPLATE_PATH/);
     }
   );
 
