@@ -308,8 +308,8 @@ test('onMessageCreate does not warn for non-command messages with many tokens', 
 
   const originalConsoleLog = console.log;
   const logs = [];
-  console.log = (message) => {
-    logs.push(String(message));
+  console.log = (...args) => {
+    logs.push(args.map((value) => String(value)).join(' '));
   };
 
   try {
@@ -322,7 +322,10 @@ test('onMessageCreate does not warn for non-command messages with many tokens', 
     console.log = originalConsoleLog;
   }
 
-  assert.equal(logs.some((entry) => entry.includes('Ignoring command: too many tokens.')), false);
+  assert.equal(
+    logs.some((entry) => entry.includes('Ignoring command: too many tokens.')),
+    false
+  );
 });
 
 test('sendOutboxPayload times out when sendGroupMessage stalls', async (t) => {

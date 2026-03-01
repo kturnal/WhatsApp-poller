@@ -1321,10 +1321,6 @@ class GameSchedulerBot {
     }
 
     const parts = body.split(/\s+/).filter(Boolean);
-    if (parts.length === 0) {
-      return;
-    }
-
     if (parts.length > MAX_COMMAND_TOKENS) {
       log('WARN', 'Ignoring command: too many tokens.', {
         tokenCount: parts.length,
