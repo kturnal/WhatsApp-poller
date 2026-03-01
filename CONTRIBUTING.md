@@ -45,7 +45,7 @@ Commit prefixes in PR commits:
 
 - Keep scope focused.
 - Include tests for behavior changes.
-- Update docs when configuration or runtime behavior changes.
+- Update docs when configuration or runtime behavior changes (`.env.example` is the canonical env reference).
 - Do not commit secrets, `.env`, or session/database files.
 
 ## Reporting bugs
