@@ -4,8 +4,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { DateTime } = require('luxon');
 
 const { GameSchedulerBot } = require('../../src/index');
+
+const NON_EXPIRED_NOW = DateTime.fromObject(
+  { year: 2026, month: 3, day: 2, hour: 12, minute: 0 },
+  { zone: 'Europe/Istanbul' }
+).toMillis();
+const EXPIRED_NOW = DateTime.fromObject(
+  { year: 2026, month: 3, day: 3, hour: 21, minute: 0 },
+  { zone: 'Europe/Istanbul' }
+).toMillis();
 
 class FakeChat {
   constructor() {
@@ -40,10 +50,12 @@ class FakeChat {
 }
 
 class FakeClient extends EventEmitter {
-  constructor(groupId, chat) {
+  constructor(groupId, ownerJid, groupChat, ownerChat = new FakeChat()) {
     super();
     this.groupId = groupId;
-    this.chat = chat;
+    this.ownerJid = ownerJid;
+    this.groupChat = groupChat;
+    this.ownerChat = ownerChat;
     this.initialized = false;
     this.destroyed = false;
     this.pollVotesByMessageId = new Map();
@@ -57,12 +69,16 @@ class FakeClient extends EventEmitter {
     this.destroyed = true;
   }
 
-  async getChatById(groupId) {
-    if (groupId !== this.groupId) {
-      throw new Error(`Unknown group id requested: ${groupId}`);
+  async getChatById(chatId) {
+    if (chatId === this.groupId) {
+      return this.groupChat;
     }
 
-    return this.chat;
+    if (chatId === this.ownerJid) {
+      return this.ownerChat;
+    }
+
+    throw new Error(`Unknown chat id requested: ${chatId}`);
   }
 
   async getPollVotes(messageId) {
@@ -108,7 +124,8 @@ function createConfig(dataDir, overrides = {}) {
 
 function createBotInstance(config, options = {}) {
   const chat = options.chat || new FakeChat();
-  const client = new FakeClient(config.groupId, chat);
+  const ownerChat = options.ownerChat || new FakeChat();
+  const client = new FakeClient(config.groupId, config.ownerJid, chat, ownerChat);
 
   const bot = new GameSchedulerBot(config, {
     now: options.now,
@@ -124,14 +141,15 @@ function createBotInstance(config, options = {}) {
     })
   });
 
-  return { bot, chat, client };
+  return { bot, chat, ownerChat, client };
 }
 
 function createHarness(overrides = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-test-'));
   const baseConfig = createConfig(tempDir, overrides.config || {});
-  const { bot, chat, client } = createBotInstance(baseConfig, {
+  const { bot, chat, ownerChat, client } = createBotInstance(baseConfig, {
     chat: overrides.chat,
+    ownerChat: overrides.ownerChat,
     now: overrides.now,
     outboxMaxAttempts: overrides.outboxMaxAttempts,
     outboxRetryBaseMs: overrides.outboxRetryBaseMs,
@@ -141,6 +159,7 @@ function createHarness(overrides = {}) {
   return {
     bot,
     chat,
+    ownerChat,
     client,
     config: baseConfig,
     cleanup: async () => {
@@ -180,7 +199,9 @@ async function waitForCondition(condition, timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, 
 }
 
 test('quorum votes close poll and announce winner', async (t) => {
-  const harness = createHarness();
+  const harness = createHarness({
+    now: () => NON_EXPIRED_NOW
+  });
   t.after(async () => {
     await harness.cleanup();
   });
@@ -210,11 +231,49 @@ test('quorum votes close poll and announce winner', async (t) => {
   assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
 });
 
+test('quorum close with expired winning slot closes without winner and DMs owner', async (t) => {
+  const harness = createHarness({
+    now: () => EXPIRED_NOW
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  const latest = harness.bot.db.getPollByWeekKey(harness.config.groupId, activePoll.weekKey);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, null);
+  assert.equal(latest.winnerVoteCount, 0);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.every((message) => !message.includes('Weekly game slot selected:')));
+
+  const ownerMessages = harness.ownerChat.messages.filter((message) => typeof message === 'string');
+  assert.ok(
+    ownerMessages.some((message) => message.includes('closed without a winner announcement'))
+  );
+});
+
 test('restart with persistent data closes poll on deadline and announces winner', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-restart-test-'));
   const chat = new FakeChat();
   const managedBots = new Set();
-  let clockNow = Date.now();
+  let clockNow = NON_EXPIRED_NOW;
 
   t.after(async () => {
     for (const bot of managedBots) {
@@ -280,10 +339,86 @@ test('restart with persistent data closes poll on deadline and announces winner'
   assert.ok(textMessages.some((message) => message.includes('Weekly game slot selected:')));
 });
 
+test('restart with persistent data closes expired winning slot without public announcement', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-restart-expired-test-'));
+  const chat = new FakeChat();
+  const ownerChat = new FakeChat();
+  const managedBots = new Set();
+  let clockNow = EXPIRED_NOW;
+
+  t.after(async () => {
+    for (const bot of managedBots) {
+      await bot.shutdown('test');
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const firstConfig = createConfig(dataDir, {
+    requiredVoters: 5,
+    pollCloseHours: 1
+  });
+
+  const first = createBotInstance(firstConfig, {
+    chat,
+    ownerChat,
+    now: () => clockNow
+  });
+  managedBots.add(first.bot);
+
+  await first.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = first.bot.db.getActivePoll(firstConfig.groupId);
+  assert.ok(activePoll);
+
+  await first.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await first.bot.shutdown('test');
+  managedBots.delete(first.bot);
+
+  clockNow = activePoll.closesAt + 1000;
+
+  const secondConfig = createConfig(dataDir, {
+    requiredVoters: 5,
+    pollCloseHours: 1
+  });
+
+  const second = createBotInstance(secondConfig, {
+    chat,
+    ownerChat,
+    now: () => clockNow
+  });
+  managedBots.add(second.bot);
+
+  second.bot.recoverPendingPolls();
+
+  await waitForCondition(() => {
+    const latest = second.bot.db.getPollById(activePoll.id);
+    return latest && latest.status === 'ANNOUNCED';
+  });
+
+  const latest = second.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.closeReason, 'deadline');
+  assert.equal(latest.winningOptionIdx, null);
+  assert.equal(latest.winnerVoteCount, 0);
+
+  const groupTextMessages = chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.every((message) => !message.includes('Weekly game slot selected:')));
+
+  const ownerMessages = ownerChat.messages.filter((message) => typeof message === 'string');
+  assert.ok(
+    ownerMessages.some((message) => message.includes('closed without a winner announcement'))
+  );
+});
+
 test('restart reconciliation backfills missed votes before quorum closure', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-reconcile-test-'));
   const chat = new FakeChat();
   const managedBots = new Set();
+  let clockNow = NON_EXPIRED_NOW;
 
   t.after(async () => {
     for (const bot of managedBots) {
@@ -298,7 +433,8 @@ test('restart reconciliation backfills missed votes before quorum closure', asyn
   });
 
   const first = createBotInstance(firstConfig, {
-    chat
+    chat,
+    now: () => clockNow
   });
   managedBots.add(first.bot);
 
@@ -315,7 +451,8 @@ test('restart reconciliation backfills missed votes before quorum closure', asyn
   });
 
   const second = createBotInstance(secondConfig, {
-    chat
+    chat,
+    now: () => clockNow
   });
   managedBots.add(second.bot);
 
@@ -360,9 +497,11 @@ test('restart reconciliation backfills missed votes before quorum closure', asyn
 test('outbox retries winner announcement after a transient send error', async (t) => {
   const chat = new FakeChat();
   chat.failNextTextMessages = 1;
+  const realStart = Date.now();
 
   const harness = createHarness({
     chat,
+    now: () => NON_EXPIRED_NOW + (Date.now() - realStart),
     outboxMaxAttempts: 3,
     outboxRetryBaseMs: 20,
     outboxRetryMaxMs: 20
@@ -406,7 +545,7 @@ test('outbox recovery delivers a failed winner announcement after restart', asyn
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-outbox-restart-test-'));
   const chat = new FakeChat();
   const managedBots = new Set();
-  let clockNow = Date.now();
+  let clockNow = NON_EXPIRED_NOW;
 
   t.after(async () => {
     for (const bot of managedBots) {
@@ -483,7 +622,9 @@ test('outbox recovery delivers a failed winner announcement after restart', asyn
 });
 
 test('tie can be resolved with owner manual pick', async (t) => {
-  const harness = createHarness();
+  const harness = createHarness({
+    now: () => NON_EXPIRED_NOW
+  });
   t.after(async () => {
     await harness.cleanup();
   });
@@ -518,6 +659,91 @@ test('tie can be resolved with owner manual pick', async (t) => {
   const latest = harness.bot.db.getPollById(activePoll.id);
   assert.equal(latest.status, 'ANNOUNCED');
   assert.equal(latest.winningOptionIdx, 1);
+});
+
+test('tie timeout with expired winning slot closes without winner', async (t) => {
+  const harness = createHarness({
+    now: () => EXPIRED_NOW
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-1' }]
+  });
+
+  const tiePoll = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(tiePoll.status, 'TIE_PENDING');
+
+  await harness.bot.handleTieTimeout(activePoll.id);
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, null);
+  assert.equal(latest.winnerVoteCount, 0);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.every((message) => !message.includes('Weekly game slot selected:')));
+
+  const ownerMessages = harness.ownerChat.messages.filter((message) => typeof message === 'string');
+  assert.ok(
+    ownerMessages.some((message) => message.includes('closed without a winner announcement'))
+  );
+});
+
+test('manual tie pick can still announce an expired slot winner', async (t) => {
+  const harness = createHarness({
+    now: () => EXPIRED_NOW
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-1' }]
+  });
+
+  await harness.bot.handleManualPick(
+    {
+      body: '!schedule pick 1',
+      from: harness.config.groupId,
+      author: harness.config.ownerJid
+    },
+    '1'
+  );
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 0);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.some((message) => message.includes('Weekly game slot selected:')));
+  assert.equal(harness.ownerChat.messages.length, 0);
 });
 
 test('command rate limiting drops excess commands from same sender', async (t) => {
