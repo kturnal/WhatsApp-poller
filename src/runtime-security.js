@@ -12,6 +12,10 @@ function modeToOctal(mode) {
   return mode.toString(8).padStart(4, '0');
 }
 
+function isMissingPathError(error) {
+  return error && error.code === 'ENOENT';
+}
+
 function applyMode(targetPath, expectedMode, stats, remediations) {
   const before = currentMode(stats);
 
@@ -44,7 +48,17 @@ function walkSecure(rootPath, remediations, dataDir) {
   if (stats.isDirectory()) {
     applyMode(rootPath, DIRECTORY_MODE, stats, remediations);
 
-    const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    let entries;
+    try {
+      entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return;
+      }
+
+      throw error;
+    }
+
     for (const entry of entries) {
       walkSecure(path.join(rootPath, entry.name), remediations, dataDir);
     }

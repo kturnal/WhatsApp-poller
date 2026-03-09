@@ -78,3 +78,29 @@ test('enforceSecureRuntimePermissions rejects DATA_DIR when root path is a symli
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('enforceSecureRuntimePermissions ignores directories that disappear before readdirSync', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-runtime-security-'));
+  const dataDir = path.join(tempDir, 'data');
+  const volatileDir = path.join(dataDir, 'session');
+  const originalReaddirSync = fs.readdirSync;
+
+  fs.mkdirSync(volatileDir, { recursive: true });
+
+  fs.readdirSync = (targetPath, ...args) => {
+    if (targetPath === volatileDir) {
+      const error = new Error(`ENOENT: no such file or directory, scandir '${targetPath}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+
+    return originalReaddirSync.call(fs, targetPath, ...args);
+  };
+
+  try {
+    assert.doesNotThrow(() => enforceSecureRuntimePermissions(dataDir));
+  } finally {
+    fs.readdirSync = originalReaddirSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
