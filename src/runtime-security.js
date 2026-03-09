@@ -12,6 +12,10 @@ function modeToOctal(mode) {
   return mode.toString(8).padStart(4, '0');
 }
 
+function isMissingPathError(error) {
+  return error && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
+}
+
 function applyMode(targetPath, expectedMode, stats, remediations) {
   const before = currentMode(stats);
 
@@ -19,7 +23,15 @@ function applyMode(targetPath, expectedMode, stats, remediations) {
     return;
   }
 
-  fs.chmodSync(targetPath, expectedMode);
+  try {
+    fs.chmodSync(targetPath, expectedMode);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return;
+    }
+
+    throw error;
+  }
 
   remediations.push({
     path: targetPath,
@@ -29,7 +41,16 @@ function applyMode(targetPath, expectedMode, stats, remediations) {
 }
 
 function walkSecure(rootPath, remediations, dataDir) {
-  const stats = fs.lstatSync(rootPath);
+  let stats;
+  try {
+    stats = fs.lstatSync(rootPath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return;
+    }
+
+    throw error;
+  }
 
   if (stats.isSymbolicLink()) {
     if (rootPath === dataDir) {
@@ -44,7 +65,17 @@ function walkSecure(rootPath, remediations, dataDir) {
   if (stats.isDirectory()) {
     applyMode(rootPath, DIRECTORY_MODE, stats, remediations);
 
-    const entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    let entries;
+    try {
+      entries = fs.readdirSync(rootPath, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return;
+      }
+
+      throw error;
+    }
+
     for (const entry of entries) {
       walkSecure(path.join(rootPath, entry.name), remediations, dataDir);
     }
