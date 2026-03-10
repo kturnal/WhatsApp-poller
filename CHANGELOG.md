@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.3.1...whatsapp-poller-v0.3.2) (2026-03-10)
+
+
+### Bug Fixes
+
+* skip expired automatic winner announcements ([ed6e319](https://github.com/kturnal/WhatsApp-poller/commit/ed6e319a24539efe6852ede3c1a11cbabfd937ea))
+
 ## [0.3.1](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.3.0...whatsapp-poller-v0.3.1) (2026-03-01)
 
 ### Bug Fixes
