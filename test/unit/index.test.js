@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { DateTime } = require('luxon');
 
 const {
   GameSchedulerBot,
@@ -16,9 +17,18 @@ const {
 class FakeChat {
   constructor() {
     this.messages = [];
+    this.failNextTextMessages = 0;
+    this.failTextErrorMessage = 'Simulated text send failure';
+    this.failedTextMessages = [];
   }
 
   async sendMessage(payload) {
+    if (typeof payload === 'string' && this.failNextTextMessages > 0) {
+      this.failNextTextMessages -= 1;
+      this.failedTextMessages.push(payload);
+      throw new Error(this.failTextErrorMessage);
+    }
+
     this.messages.push(payload);
     return {
       id: { _serialized: `msg-${this.messages.length}` },
@@ -28,10 +38,12 @@ class FakeChat {
 }
 
 class FakeClient extends EventEmitter {
-  constructor(groupId, chat) {
+  constructor(groupId, ownerJid, groupChat, ownerChat = new FakeChat()) {
     super();
     this.groupId = groupId;
-    this.chat = chat;
+    this.ownerJid = ownerJid;
+    this.groupChat = groupChat;
+    this.ownerChat = ownerChat;
     this.lidAndPhoneByUserId = new Map();
   }
 
@@ -39,12 +51,16 @@ class FakeClient extends EventEmitter {
 
   async destroy() {}
 
-  async getChatById(groupId) {
-    if (groupId !== this.groupId) {
-      throw new Error(`Unknown group id: ${groupId}`);
+  async getChatById(chatId) {
+    if (chatId === this.groupId) {
+      return this.groupChat;
     }
 
-    return this.chat;
+    if (chatId === this.ownerJid) {
+      return this.ownerChat;
+    }
+
+    throw new Error(`Unknown chat id: ${chatId}`);
   }
 
   async getPollVotes() {
@@ -93,8 +109,9 @@ function createConfig(dataDir, overrides = {}) {
 function createBotHarness(configOverrides = {}, dependencies = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-unit-index-'));
   const config = createConfig(tempDir, configOverrides);
-  const chat = new FakeChat();
-  const client = new FakeClient(config.groupId, chat);
+  const chat = dependencies.chat || new FakeChat();
+  const ownerChat = dependencies.ownerChat || new FakeChat();
+  const client = new FakeClient(config.groupId, config.ownerJid, chat, ownerChat);
 
   const bot = new GameSchedulerBot(config, {
     clientFactory: () => client,
@@ -110,6 +127,7 @@ function createBotHarness(configOverrides = {}, dependencies = {}) {
   return {
     bot,
     chat,
+    ownerChat,
     client,
     config,
     cleanup: async () => {
@@ -257,6 +275,140 @@ test('normalizeVoteUpdateForPoll returns skip reasons and normalized vote payloa
       discardedLocalIds: []
     }
   );
+});
+
+test('missing slot iso falls back to announcing the winner', async (t) => {
+  const harness = createBotHarness(
+    {
+      requiredVoters: 1
+    },
+    {
+      now: () =>
+        DateTime.fromObject(
+          { year: 2026, month: 3, day: 3, hour: 21, minute: 0 },
+          { zone: 'Europe/Istanbul' }
+        ).toMillis()
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const pollId = harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W10',
+    pollMessageId: 'legacy-poll-message',
+    question: 'legacy poll',
+    options: [{ label: 'Legacy slot', localId: 'opt-0' }],
+    createdAt: harness.bot.now() - 3600000,
+    closesAt: harness.bot.now() + 3600000
+  });
+
+  harness.bot.db.upsertVote({
+    pollId,
+    voterJid: harness.config.ownerJid,
+    selectedOptions: [0],
+    updatedAt: harness.bot.now()
+  });
+
+  await harness.bot.closePoll(pollId, 'quorum');
+
+  const latest = harness.bot.db.getPollById(pollId);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 0);
+  assert.equal(latest.winnerVoteCount, 1);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('invalid slot iso falls back to announcing the winner', async (t) => {
+  const harness = createBotHarness(
+    {
+      requiredVoters: 1
+    },
+    {
+      now: () =>
+        DateTime.fromObject(
+          { year: 2026, month: 3, day: 3, hour: 21, minute: 0 },
+          { zone: 'Europe/Istanbul' }
+        ).toMillis()
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  const pollId = harness.bot.db.createPoll({
+    groupId: harness.config.groupId,
+    weekKey: '2026-W10',
+    pollMessageId: 'legacy-poll-message-invalid',
+    question: 'legacy poll invalid iso',
+    options: [{ label: 'Legacy slot', localId: 'opt-0', iso: 'not-an-iso' }],
+    createdAt: harness.bot.now() - 3600000,
+    closesAt: harness.bot.now() + 3600000
+  });
+
+  harness.bot.db.upsertVote({
+    pollId,
+    voterJid: harness.config.ownerJid,
+    selectedOptions: [0],
+    updatedAt: harness.bot.now()
+  });
+
+  await harness.bot.closePoll(pollId, 'quorum');
+
+  const latest = harness.bot.db.getPollById(pollId);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 0);
+  assert.equal(latest.winnerVoteCount, 1);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.some((message) => message.includes('Weekly game slot selected:')));
+});
+
+test('owner DM failure does not prevent closing an expired winner without announcement', async (t) => {
+  const fixedNow = DateTime.fromObject(
+    { year: 2026, month: 3, day: 3, hour: 21, minute: 0 },
+    { zone: 'Europe/Istanbul' }
+  ).toMillis();
+  const ownerChat = new FakeChat();
+  ownerChat.failNextTextMessages = 1;
+  const harness = createBotHarness(
+    {},
+    {
+      now: () => fixedNow,
+      ownerChat
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('unit');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, null);
+  assert.equal(latest.winnerVoteCount, 0);
+
+  const groupTextMessages = harness.chat.messages.filter((message) => typeof message === 'string');
+  assert.ok(groupTextMessages.every((message) => !message.includes('Weekly game slot selected:')));
+  assert.equal(harness.ownerChat.failedTextMessages.length, 1);
 });
 
 test('onVoteUpdate ignores invalid-only option selections', async (t) => {

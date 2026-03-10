@@ -523,7 +523,10 @@ class GameSchedulerBot {
   }
 
   async createCurrentWeekPollIfMissed() {
-    const { now, weekYear, weekNumber, weekKey } = currentWeekContext(this.config.timezone);
+    const { now, weekYear, weekNumber, weekKey } = currentWeekContext(
+      this.config.timezone,
+      this.now()
+    );
     const scheduledTime = scheduledWeeklyRunForWeek(this.config.timezone, weekYear, weekNumber);
 
     if (now < scheduledTime) {
@@ -608,7 +611,10 @@ class GameSchedulerBot {
       return;
     }
 
-    const { now, weekYear, weekNumber, weekKey } = currentWeekContext(this.config.timezone);
+    const { now, weekYear, weekNumber, weekKey } = currentWeekContext(
+      this.config.timezone,
+      this.now()
+    );
     const existingThisWeek = this.db.getPollByWeekKey(this.config.groupId, weekKey);
 
     if (existingThisWeek) {
@@ -809,6 +815,119 @@ class GameSchedulerBot {
       nextRetryAt: createdAt,
       lastError: null
     };
+  }
+
+  resolvePollOptionScheduledAt(poll, optionIdx) {
+    const slotIso = poll?.options?.[optionIdx]?.iso;
+    if (typeof slotIso !== 'string' || !slotIso.trim()) {
+      return {
+        scheduledAt: null,
+        slotIso: null
+      };
+    }
+
+    const scheduledAt = DateTime.fromISO(slotIso, { setZone: true });
+    if (!scheduledAt.isValid) {
+      return {
+        scheduledAt: null,
+        slotIso
+      };
+    }
+
+    return {
+      scheduledAt,
+      slotIso
+    };
+  }
+
+  getExpiredAutoWinnerState(poll, winnerIdx) {
+    const slotLabel = poll?.options?.[winnerIdx]?.label || `Option ${winnerIdx + 1}`;
+    const { scheduledAt, slotIso } = this.resolvePollOptionScheduledAt(poll, winnerIdx);
+
+    if (!scheduledAt) {
+      if (slotIso) {
+        log('WARN', 'Automatic winner slot has invalid scheduled time; announcing winner.', {
+          pollId: poll?.id ?? null,
+          winnerIdx,
+          slotIso
+        });
+      } else {
+        log('WARN', 'Automatic winner slot has no scheduled time; announcing winner.', {
+          pollId: poll?.id ?? null,
+          winnerIdx
+        });
+      }
+
+      return {
+        expired: false,
+        slotIso,
+        slotLabel
+      };
+    }
+
+    return {
+      expired: this.now() > scheduledAt.toMillis(),
+      slotIso,
+      slotLabel
+    };
+  }
+
+  async notifyOwnerExpiredWinner(poll, winnerIdx, slotLabel, slotIso, closeReason) {
+    const message = `Poll ${poll.weekKey} closed without a winner announcement because the selected slot time had already passed: ${slotLabel}.${slotIso ? ` Scheduled at ${slotIso}.` : ''} Close reason: ${closeReason}.`;
+
+    try {
+      const chat = await this.client.getChatById(this.config.ownerJid);
+      await chat.sendMessage(message);
+    } catch (error) {
+      log(
+        'WARN',
+        'Failed to notify owner about expired winning slot.',
+        errorMetadata(error, {
+          pollId: poll.id,
+          winnerIdx,
+          slotIso,
+          closeReason
+        })
+      );
+    }
+  }
+
+  async finalizeExpiredAutomaticWinner(poll, winnerIdx, winnerVotes, closeReason) {
+    const timestamp = this.now();
+    const { slotIso, slotLabel } = this.getExpiredAutoWinnerState(poll, winnerIdx);
+
+    this.db.setAnnounced({
+      pollId: poll.id,
+      closeReason,
+      closedAt: poll.closedAt || timestamp,
+      announcedAt: timestamp,
+      winnerIdx: null,
+      winnerVotes: 0
+    });
+
+    this.clearTimer(this.closeTimers, poll.id);
+    this.clearTimer(this.tieTimers, poll.id);
+
+    log('WARN', 'Winner announcement skipped because the selected slot time already passed.', {
+      pollId: poll.id,
+      winnerIdx,
+      winnerVotes,
+      slotIso,
+      closeReason
+    });
+
+    await this.notifyOwnerExpiredWinner(poll, winnerIdx, slotLabel, slotIso, closeReason);
+  }
+
+  async maybeAnnounceAutomaticWinner(poll, winnerIdx, winnerVotes, closeReason) {
+    const expiryState = this.getExpiredAutoWinnerState(poll, winnerIdx);
+    if (expiryState.expired) {
+      await this.finalizeExpiredAutomaticWinner(poll, winnerIdx, winnerVotes, closeReason);
+      return false;
+    }
+
+    await this.announceWinner(poll, winnerIdx, winnerVotes, closeReason);
+    return true;
   }
 
   getOutboxRetryDelayMs(attemptCount) {
@@ -1234,9 +1353,13 @@ class GameSchedulerBot {
         return;
       }
 
-      this.finalizeWinner(poll, summary.topIndices[0], summary.maxVotes, closeReason);
+      await this.maybeAnnounceAutomaticWinner(
+        poll,
+        summary.topIndices[0],
+        summary.maxVotes,
+        closeReason
+      );
       this.observability.recordPollClosed(closeReason);
-      await this.drainOutboxQueue();
     });
   }
 
@@ -1259,7 +1382,15 @@ class GameSchedulerBot {
       const summary = this.summarizePoll(poll);
       const winnerVotes = summary.counts[winnerIdx] || 0;
 
-      await this.announceWinner(poll, winnerIdx, winnerVotes, 'tie-timeout');
+      const announced = await this.maybeAnnounceAutomaticWinner(
+        poll,
+        winnerIdx,
+        winnerVotes,
+        'tie-timeout'
+      );
+      if (announced) {
+        return;
+      }
     });
   }
 
