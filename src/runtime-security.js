@@ -13,7 +13,7 @@ function modeToOctal(mode) {
 }
 
 function isMissingPathError(error) {
-  return error && error.code === 'ENOENT';
+  return error && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
 }
 
 function applyMode(targetPath, expectedMode, stats, remediations) {
@@ -23,7 +23,15 @@ function applyMode(targetPath, expectedMode, stats, remediations) {
     return;
   }
 
-  fs.chmodSync(targetPath, expectedMode);
+  try {
+    fs.chmodSync(targetPath, expectedMode);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return;
+    }
+
+    throw error;
+  }
 
   remediations.push({
     path: targetPath,
@@ -33,7 +41,16 @@ function applyMode(targetPath, expectedMode, stats, remediations) {
 }
 
 function walkSecure(rootPath, remediations, dataDir) {
-  const stats = fs.lstatSync(rootPath);
+  let stats;
+  try {
+    stats = fs.lstatSync(rootPath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return;
+    }
+
+    throw error;
+  }
 
   if (stats.isSymbolicLink()) {
     if (rootPath === dataDir) {

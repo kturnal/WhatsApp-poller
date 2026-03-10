@@ -79,6 +79,34 @@ test('enforceSecureRuntimePermissions rejects DATA_DIR when root path is a symli
   }
 });
 
+test('enforceSecureRuntimePermissions ignores files that disappear before lstat', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-runtime-security-'));
+  const dataDir = path.join(tempDir, 'data');
+  const volatileDir = path.join(dataDir, 'session');
+  const volatileFile = path.join(volatileDir, '000948.log');
+  const originalLstatSync = fs.lstatSync;
+
+  fs.mkdirSync(volatileDir, { recursive: true });
+  fs.writeFileSync(volatileFile, 'volatile', 'utf8');
+
+  fs.lstatSync = (targetPath, ...args) => {
+    if (targetPath === volatileFile) {
+      const error = new Error(`ENOENT: no such file or directory, lstat '${targetPath}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+
+    return originalLstatSync.call(fs, targetPath, ...args);
+  };
+
+  try {
+    assert.doesNotThrow(() => enforceSecureRuntimePermissions(dataDir));
+  } finally {
+    fs.lstatSync = originalLstatSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('enforceSecureRuntimePermissions ignores directories that disappear before readdirSync', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-runtime-security-'));
   const dataDir = path.join(tempDir, 'data');
@@ -101,6 +129,36 @@ test('enforceSecureRuntimePermissions ignores directories that disappear before 
     assert.doesNotThrow(() => enforceSecureRuntimePermissions(dataDir));
   } finally {
     fs.readdirSync = originalReaddirSync;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('enforceSecureRuntimePermissions ignores files that disappear before chmod', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-runtime-security-'));
+  const dataDir = path.join(tempDir, 'data');
+  const volatileDir = path.join(dataDir, 'session');
+  const volatileFile = path.join(volatileDir, '000949.log');
+  const originalChmodSync = fs.chmodSync;
+
+  fs.mkdirSync(volatileDir, { recursive: true });
+  fs.writeFileSync(volatileFile, 'volatile', 'utf8');
+  fs.chmodSync(volatileFile, 0o644);
+
+  fs.chmodSync = (targetPath, mode, ...args) => {
+    if (targetPath === volatileFile) {
+      fs.rmSync(volatileFile, { force: true });
+      const error = new Error(`ENOENT: no such file or directory, chmod '${targetPath}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+
+    return originalChmodSync.call(fs, targetPath, mode, ...args);
+  };
+
+  try {
+    assert.doesNotThrow(() => enforceSecureRuntimePermissions(dataDir));
+  } finally {
+    fs.chmodSync = originalChmodSync;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
