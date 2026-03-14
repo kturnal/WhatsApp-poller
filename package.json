@@ -30,7 +30,11 @@
   },
   "overrides": {
     "flatted": "3.4.1",
-    "yauzl": "3.2.1"
+    "@puppeteer/browsers": {
+      "extract-zip": {
+        "yauzl": "3.2.1"
+      }
+    }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
