@@ -326,7 +326,12 @@ test('restart with persistent data closes poll on deadline and announces winner'
 
   await waitForCondition(() => {
     const latest = second.bot.db.getPollById(activePoll.id);
-    return latest && latest.status === 'ANNOUNCED';
+    const textMessages = chat.messages.filter((message) => typeof message === 'string');
+    return (
+      latest &&
+      latest.status === 'ANNOUNCED' &&
+      textMessages.some((message) => message.includes('Weekly game slot selected:'))
+    );
   });
 
   const latest = second.bot.db.getPollById(activePoll.id);
@@ -396,7 +401,12 @@ test('restart with persistent data closes expired winning slot without public an
 
   await waitForCondition(() => {
     const latest = second.bot.db.getPollById(activePoll.id);
-    return latest && latest.status === 'ANNOUNCED';
+    const ownerMessages = ownerChat.messages.filter((message) => typeof message === 'string');
+    return (
+      latest &&
+      latest.status === 'ANNOUNCED' &&
+      ownerMessages.some((message) => message.includes('closed without a winner announcement'))
+    );
   });
 
   const latest = second.bot.db.getPollById(activePoll.id);
