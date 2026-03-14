@@ -14,6 +14,16 @@ const SLOT_TEMPLATE = [
   { weekday: 7, hour: 20, minute: 0 }
 ];
 
+const CRON_WEEKDAY_TO_ISO = {
+  SUN: 7,
+  MON: 1,
+  TUE: 2,
+  WED: 3,
+  THU: 4,
+  FRI: 5,
+  SAT: 6
+};
+
 function describeValue(value) {
   return typeof value === 'string' ? `"${value}"` : String(value);
 }
@@ -65,6 +75,96 @@ function validateSlotTemplate(template, sourceName = 'slot template') {
       minute: parseTemplateField(sourceName, index, 'minute', slot.minute, 0, 59)
     };
   });
+}
+
+function parseFixedCronNumber(fieldName, rawValue, min, max) {
+  if (!/^\d+$/.test(rawValue)) {
+    throw new Error(
+      `POLL_CRON must use a fixed ${fieldName} value between ${min} and ${max}; got "${rawValue}".`
+    );
+  }
+
+  const value = Number.parseInt(rawValue, 10);
+  if (value < min || value > max) {
+    throw new Error(`POLL_CRON ${fieldName} must be between ${min} and ${max}; got ${value}.`);
+  }
+
+  return value;
+}
+
+function parseCronWeekday(rawValue) {
+  const normalized = rawValue.trim().toUpperCase();
+
+  if (/^\d+$/.test(normalized)) {
+    const value = Number.parseInt(normalized, 10);
+    if (value < 0 || value > 7) {
+      throw new Error(
+        `POLL_CRON day-of-week must be a single weekday value (0-7 or SUN-SAT); got "${rawValue}".`
+      );
+    }
+
+    return value === 0 ? 7 : value;
+  }
+
+  const isoWeekday = CRON_WEEKDAY_TO_ISO[normalized];
+  if (!isoWeekday) {
+    throw new Error(
+      `POLL_CRON day-of-week must be a single weekday value (0-7 or SUN-SAT); got "${rawValue}".`
+    );
+  }
+
+  return isoWeekday;
+}
+
+/**
+ * Parse the supported weekly POLL_CRON shape for startup catch-up.
+ *
+ * Supported shapes:
+ * - `M H * * DOW`
+ * - `S M H * * DOW`
+ *
+ * where second/minute/hour are fixed numeric values and DOW is a single weekday
+ * expressed as 0-7 or SUN-SAT.
+ *
+ * @param {string} pollCron - Cron expression to parse.
+ * @returns {{second:number, minute:number, hour:number, weekday:number}}
+ */
+function parseWeeklyPollCron(pollCron) {
+  if (typeof pollCron !== 'string' || !pollCron.trim()) {
+    throw new Error('POLL_CRON must be a non-empty string.');
+  }
+
+  const parts = pollCron.trim().split(/\s+/);
+  if (parts.length !== 5 && parts.length !== 6) {
+    throw new Error(
+      'POLL_CRON must use 5 or 6 cron fields and represent a weekly schedule with a single day-of-week.'
+    );
+  }
+
+  const hasSeconds = parts.length === 6;
+  const second = hasSeconds ? parseFixedCronNumber('second', parts[0], 0, 59) : 0;
+  const minute = parseFixedCronNumber('minute', parts[hasSeconds ? 1 : 0], 0, 59);
+  const hour = parseFixedCronNumber('hour', parts[hasSeconds ? 2 : 1], 0, 23);
+  const dayOfMonth = parts[hasSeconds ? 3 : 2];
+  const month = parts[hasSeconds ? 4 : 3];
+  const dayOfWeek = parts[hasSeconds ? 5 : 4];
+
+  if (dayOfMonth !== '*') {
+    throw new Error(
+      'POLL_CRON must use "*" for day-of-month to keep weekly scheduling unambiguous.'
+    );
+  }
+
+  if (month !== '*') {
+    throw new Error('POLL_CRON must use "*" for month to keep weekly scheduling unambiguous.');
+  }
+
+  return {
+    second,
+    minute,
+    hour,
+    weekday: parseCronWeekday(dayOfWeek)
+  };
 }
 
 /**
@@ -266,21 +366,24 @@ function buildOptionsForWeek(timezone, weekYear, weekNumber, slotTemplate = SLOT
 }
 
 /**
- * Create a Luxon DateTime for Monday at 12:00:00 of the specified ISO week in the given timezone.
+ * Create a Luxon DateTime for the configured weekly POLL_CRON occurrence in the specified ISO week.
  * @param {string} timezone - IANA timezone name to use for the DateTime.
  * @param {number} weekYear - ISO week-numbering year.
  * @param {number} weekNumber - ISO week number (1-53).
- * @returns {import('luxon').DateTime} DateTime representing Monday at 12:00:00 of the specified ISO week in the given zone.
+ * @param {string} [pollCron='0 12 * * 1'] - Weekly cron expression used to anchor startup catch-up.
+ * @returns {import('luxon').DateTime} DateTime representing the configured weekly run in the specified ISO week in the given zone.
  */
-function scheduledWeeklyRunForWeek(timezone, weekYear, weekNumber) {
+function scheduledWeeklyRunForWeek(timezone, weekYear, weekNumber, pollCron = '0 12 * * 1') {
+  const schedule = parseWeeklyPollCron(pollCron);
+
   return DateTime.fromObject(
     {
       weekYear,
       weekNumber,
-      weekday: 1,
-      hour: 12,
-      minute: 0,
-      second: 0,
+      weekday: schedule.weekday,
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: schedule.second,
       millisecond: 0
     },
     { zone: timezone }
@@ -290,6 +393,7 @@ function scheduledWeeklyRunForWeek(timezone, weekYear, weekNumber) {
 module.exports = {
   SLOT_TEMPLATE,
   validateSlotTemplate,
+  parseWeeklyPollCron,
   buildWeekKey,
   parseWeekSpecifier,
   currentWeekContext,

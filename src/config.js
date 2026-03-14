@@ -1,7 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DateTime } = require('luxon');
-const { SLOT_TEMPLATE, parseWeekSpecifier, validateSlotTemplate } = require('./poll-slots');
+const {
+  SLOT_TEMPLATE,
+  parseWeekSpecifier,
+  parseWeeklyPollCron,
+  validateSlotTemplate
+} = require('./poll-slots');
 
 /**
  * Retrieve and validate a required environment variable.
@@ -261,6 +266,10 @@ function loadConfig() {
     process.env.WEEK_SELECTION_MODE?.trim().toLowerCase() || 'interactive';
   if (!['interactive', 'auto'].includes(rawWeekSelectionMode)) {
     throw new Error('WEEK_SELECTION_MODE must be either "interactive" or "auto".');
+  }
+
+  if (rawWeekSelectionMode === 'auto') {
+    parseWeeklyPollCron(pollCron);
   }
 
   const targetWeekRaw = process.env.TARGET_WEEK?.trim() || null;
