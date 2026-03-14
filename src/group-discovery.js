@@ -8,6 +8,8 @@ const { loadClientRuntimeConfig } = require('./config');
 const { errorMetadata, log, setLogOptions } = require('./logger');
 const { enforceSecureRuntimePermissions } = require('./runtime-security');
 
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 60 * 1000;
+
 function serializeChatId(chat) {
   if (!chat || !chat.id) {
     return null;
@@ -86,7 +88,109 @@ function printGroupCandidates(output, groups) {
   }
 }
 
-async function runGroupDiscovery({ output = process.stdout, clientFactory } = {}) {
+function printDiscoverySummary(output, groups) {
+  printGroupCandidates(output, groups);
+
+  if (groups.length > 0) {
+    output.write('\nCopy the correct GROUP_ID into .env, then run npm run doctor.\n');
+  }
+}
+
+function resolveGroupDiscoveryClient(clientSource, options) {
+  const client =
+    typeof clientSource === 'function'
+      ? clientSource()
+      : clientSource ||
+        new Client({
+          authStrategy: new LocalAuth({
+            clientId: options.clientId,
+            dataPath: path.join(options.dataDir, 'session')
+          }),
+          puppeteer: {
+            headless: options.headless,
+            args: options.puppeteerArgs
+          }
+        });
+
+  if (
+    !client ||
+    typeof client.on !== 'function' ||
+    typeof client.once !== 'function' ||
+    typeof client.initialize !== 'function' ||
+    typeof client.destroy !== 'function' ||
+    typeof client.getChats !== 'function'
+  ) {
+    throw new Error(
+      'Group discovery client must implement on(), once(), initialize(), destroy(), and getChats().'
+    );
+  }
+
+  return client;
+}
+
+async function discoverGroupsWithClient({
+  client,
+  output,
+  discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS
+}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const discoveryTimeout = setTimeout(() => {
+      rejectOnce(new Error(`Group discovery timed out after ${discoveryTimeoutMs} ms.`));
+    }, discoveryTimeoutMs);
+
+    const resolveOnce = (value) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(discoveryTimeout);
+      resolve(value);
+    };
+    const rejectOnce = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(discoveryTimeout);
+      reject(error);
+    };
+
+    client.on('qr', (qr) => {
+      output.write('Scan the QR code with WhatsApp to list your available groups.\n');
+      qrcodeTerminal.generate(qr, { small: true });
+    });
+
+    client.once('ready', async () => {
+      try {
+        const chats = await client.getChats();
+        resolveOnce(collectGroupCandidates(Array.isArray(chats) ? chats : []));
+      } catch (error) {
+        rejectOnce(error);
+      }
+    });
+
+    client.once('auth_failure', (message) => {
+      rejectOnce(new Error(`Authentication failure during group discovery: ${message}`));
+    });
+
+    client.once('disconnected', (reason) => {
+      rejectOnce(
+        new Error(`WhatsApp client disconnected before group discovery completed: ${reason}`)
+      );
+    });
+
+    client.initialize().catch(rejectOnce);
+  });
+}
+
+async function runGroupDiscovery({
+  output = process.stdout,
+  clientFactory: clientSource,
+  discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS
+} = {}) {
   let config;
 
   try {
@@ -116,68 +220,25 @@ async function runGroupDiscovery({ output = process.stdout, clientFactory } = {}
     log('WARN', 'Chromium sandbox is disabled by ALLOW_INSECURE_CHROMIUM=true.');
   }
 
-  const client =
-    clientFactory ||
-    new Client({
-      authStrategy: new LocalAuth({
-        clientId: config.clientId,
-        dataPath: path.join(config.dataDir, 'session')
-      }),
-      puppeteer: {
-        headless: config.headless,
-        args: puppeteerArgs
-      }
-    });
+  let client;
 
   try {
-    const groups = await new Promise((resolve, reject) => {
-      let settled = false;
-      const resolveOnce = (value) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        resolve(value);
-      };
-      const rejectOnce = (error) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        reject(error);
-      };
-
-      client.on('qr', (qr) => {
-        output.write('Scan the QR code with WhatsApp to list your available groups.\n');
-        qrcodeTerminal.generate(qr, { small: true });
-      });
-
-      client.once('ready', async () => {
-        try {
-          const chats = await client.getChats();
-          resolveOnce(collectGroupCandidates(Array.isArray(chats) ? chats : []));
-        } catch (error) {
-          rejectOnce(error);
-        }
-      });
-
-      client.once('auth_failure', (message) => {
-        rejectOnce(new Error(`Authentication failure during group discovery: ${message}`));
-      });
-
-      client.once('disconnected', (reason) => {
-        rejectOnce(
-          new Error(`WhatsApp client disconnected before group discovery completed: ${reason}`)
-        );
-      });
-
-      client.initialize().catch(rejectOnce);
+    client = resolveGroupDiscoveryClient(clientSource, {
+      clientId: config.clientId,
+      dataDir: config.dataDir,
+      headless: config.headless,
+      puppeteerArgs
     });
+  } catch (error) {
+    log('ERROR', 'Invalid client configuration for group discovery.', errorMetadata(error));
+    process.exitCode = 1;
+    return;
+  }
 
-    printGroupCandidates(output, groups);
-    output.write('\nCopy the correct GROUP_ID into .env, then run npm run doctor.\n');
+  try {
+    const groups = await discoverGroupsWithClient({ client, output, discoveryTimeoutMs });
+
+    printDiscoverySummary(output, groups);
   } catch (error) {
     log('ERROR', 'Failed to discover WhatsApp groups.', errorMetadata(error));
     process.exitCode = 1;
@@ -197,9 +258,13 @@ if (require.main === module) {
 
 module.exports = {
   collectGroupCandidates,
+  DEFAULT_DISCOVERY_TIMEOUT_MS,
+  discoverGroupsWithClient,
   getChatLabel,
   isGroupChat,
+  printDiscoverySummary,
   printGroupCandidates,
+  resolveGroupDiscoveryClient,
   runGroupDiscovery,
   serializeChatId
 };

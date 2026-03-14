@@ -109,7 +109,7 @@ Use this for Docker, VPS, or home-server deployments that must survive restarts 
 
 ### Docker Compose setup
 
-After completing setup path 2, keep Docker volume persistence aligned with `DATA_DIR`. By default this repo uses `./data:/app/data`. If you change `DATA_DIR` from its default value, update the Compose host-path mapping to point to the same persistent directory (for example, `./${DATA_DIR}:/app/data`).
+After completing setup path 2, keep Docker volume persistence aligned with `DATA_DIR`. By default this repo uses `./data:/app/data`. If you change `DATA_DIR`, map that exact path into `/app/data` without prefixing it with `./` because `DATA_DIR` may already be absolute (for example, `${DATA_DIR}:/app/data` or `/var/lib/poller:/app/data`).
 
 - Persistent `/app/data` stores:
   - WhatsApp session (`/app/data/session`)

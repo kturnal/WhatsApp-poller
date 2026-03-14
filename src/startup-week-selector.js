@@ -24,7 +24,7 @@ function parseYesNo(raw) {
 }
 
 function describeInteractiveStartupMode(config) {
-  if (config.weekSelectionMode !== 'interactive') {
+  if (config.weekSelectionMode === 'auto') {
     return {
       requiresPrompt: false,
       doctorStatus: 'PASS',

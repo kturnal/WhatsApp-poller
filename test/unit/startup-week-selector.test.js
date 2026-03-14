@@ -83,6 +83,22 @@ test('describeInteractiveStartupMode passes when interactive mode provides TARGE
   );
 });
 
+test('describeInteractiveStartupMode does not treat missing mode as auto', () => {
+  assert.deepEqual(
+    describeInteractiveStartupMode({
+      targetWeek: null
+    }),
+    {
+      requiresPrompt: true,
+      doctorStatus: 'WARN',
+      doctorMessage:
+        'WEEK_SELECTION_MODE=interactive without TARGET_WEEK depends on a TTY prompt and is unsafe for unattended restarts. Set TARGET_WEEK or switch to auto mode for always-on deployments.',
+      nonInteractiveError:
+        'WEEK_SELECTION_MODE=interactive requires a TTY prompt or TARGET_WEEK to run non-interactively.'
+    }
+  );
+});
+
 test('resolveStartupWeekSelection returns replace when existing week is confirmed', async () => {
   const answers = ['2026-W10', 'y', 'y'];
   const existing = new Map([['2026-W10', { id: 42 }]]);
