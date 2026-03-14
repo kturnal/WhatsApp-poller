@@ -23,6 +23,35 @@ function parseYesNo(raw) {
   return null;
 }
 
+function describeInteractiveStartupMode(config) {
+  if (config.weekSelectionMode !== 'interactive') {
+    return {
+      requiresPrompt: false,
+      doctorStatus: 'PASS',
+      doctorMessage: 'Auto startup mode is configured for unattended restarts.',
+      nonInteractiveError: null
+    };
+  }
+
+  if (config.targetWeek) {
+    return {
+      requiresPrompt: false,
+      doctorStatus: 'PASS',
+      doctorMessage: `Interactive startup will use TARGET_WEEK=${config.targetWeek} when no TTY prompt is available.`,
+      nonInteractiveError: null
+    };
+  }
+
+  return {
+    requiresPrompt: true,
+    doctorStatus: 'WARN',
+    doctorMessage:
+      'WEEK_SELECTION_MODE=interactive without TARGET_WEEK depends on a TTY prompt and is unsafe for unattended restarts. Set TARGET_WEEK or switch to auto mode for always-on deployments.',
+    nonInteractiveError:
+      'WEEK_SELECTION_MODE=interactive requires a TTY prompt or TARGET_WEEK to run non-interactively.'
+  };
+}
+
 async function promptForWeekSelection({ config, ask, output, nowMillis }) {
   while (true) {
     const rawWeek = await ask('Select target week (YYYY-Www or YYYY W##): ');
@@ -94,6 +123,8 @@ async function resolveStartupWeekSelection(params) {
     hasTty = Boolean(input?.isTTY && output?.isTTY)
   } = params;
 
+  const startupMode = describeInteractiveStartupMode(config);
+
   let closeReadline = () => {};
   let ask = providedAsk;
 
@@ -122,10 +153,8 @@ async function resolveStartupWeekSelection(params) {
         weekLabel: formatWeekDateRangeLabel(config.timezone, parsed.weekYear, parsed.weekNumber)
       };
     } else {
-      if (!hasTty) {
-        throw new Error(
-          'WEEK_SELECTION_MODE=interactive requires a TTY prompt or TARGET_WEEK to run non-interactively.'
-        );
+      if (!hasTty && startupMode.requiresPrompt) {
+        throw new Error(startupMode.nonInteractiveError);
       }
       selection = await promptForWeekSelection({ config, ask, output, nowMillis });
     }
@@ -162,5 +191,6 @@ async function resolveStartupWeekSelection(params) {
 }
 
 module.exports = {
+  describeInteractiveStartupMode,
   resolveStartupWeekSelection
 };

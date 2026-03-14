@@ -30,7 +30,9 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 - npm
 - A WhatsApp account available for QR login
 
-## 15-minute quickstart
+## Setup paths
+
+Choose one setup path up front. Both start with the same first-run prep:
 
 1. Install dependencies:
 
@@ -44,34 +46,60 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
    cp .env.example .env
    ```
 
-3. Fill required fields in `.env`:
-   - `GROUP_ID`: target WhatsApp group JID ending with `@g.us`
+3. Discover candidate group IDs by authenticating once with WhatsApp:
+
+   ```bash
+   npm run discover:groups
+   ```
+
+4. Fill required fields in `.env`:
+   - `GROUP_ID`: copy the target group JID printed by the discovery helper
    - `OWNER_PHONE`: owner phone number (digits, with country code)
    - `ALLOWED_VOTERS`: comma-separated list of eligible voter numbers
 
-4. Validate setup before starting:
+### Path 1: Local interactive use
+
+Use this when you start the bot manually in a terminal and want to choose the week at startup.
+
+1. Keep `WEEK_SELECTION_MODE=interactive`.
+2. Leave `TARGET_WEEK` empty unless you want to preselect a specific week.
+3. Validate setup:
 
    ```bash
    npm run doctor
    ```
 
-5. Start the bot:
+4. Start the bot:
 
    ```bash
    npm start
    ```
 
-6. Scan QR code from WhatsApp mobile app on first run.
-
-7. After startup, enter the target ISO week in terminal when prompted (unless `WEEK_SELECTION_MODE=auto`).
-
-8. In group chat, verify command handling:
+5. Scan the QR code from the WhatsApp mobile app on first run.
+6. Enter the target ISO week in the terminal prompt.
+7. In group chat, verify command handling:
 
    ```text
    !schedule status
    ```
 
-## Always-on deployment (recommended)
+### Path 2: Always-on deployment (recommended)
+
+Use this for Docker, VPS, or home-server deployments that must survive restarts without a terminal attached.
+
+1. Set `WEEK_SELECTION_MODE=auto` for unattended weekly operation.
+   - If you intentionally keep `WEEK_SELECTION_MODE=interactive`, also set `TARGET_WEEK=YYYY-Www` so non-TTY restarts do not fail.
+2. Validate setup and resolve any unattended-startup warnings:
+
+   ```bash
+   npm run doctor
+   ```
+
+3. Start the container in detached mode:
+
+   ```bash
+   docker compose up -d --build
+   ```
 
 ### Why always-on
 
@@ -81,26 +109,8 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 ### Docker Compose setup
 
-1. Copy the example environment file:
+After completing setup path 2, keep Docker volume persistence aligned with `DATA_DIR`. By default this repo uses `./data:/app/data`. If you change `DATA_DIR` from its default value, update the Compose host-path mapping to point to the same persistent directory (for example, `./${DATA_DIR}:/app/data`).
 
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Fill required values in `.env` (`GROUP_ID`, `OWNER_PHONE`, `ALLOWED_VOTERS`).
-   - For non-interactive container restarts in interactive mode, set `TARGET_WEEK=YYYY-Www`.
-   - Or set `WEEK_SELECTION_MODE=auto` to keep cron-driven behavior.
-
-3. Start the container in detached mode:
-
-   ```bash
-   docker compose up -d --build
-   ```
-
-- Keep Docker volume persistence aligned with `DATA_DIR`. By default this repo uses
-  `./data:/app/data`. If you change `DATA_DIR` from its default value, update the
-  Compose host-path mapping to point to the same persistent directory (for example,
-  `./${DATA_DIR}:/app/data`).
 - Persistent `/app/data` stores:
   - WhatsApp session (`/app/data/session`)
   - SQLite poll state (`/app/data/polls.sqlite`)
@@ -183,15 +193,21 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
   - `process_start_time_seconds`
   - `process_uptime_seconds`
 
-## How to get `GROUP_ID`
+## How to discover `GROUP_ID`
 
-Use one of these methods:
+Preferred method:
 
-1. From WhatsApp Web URL:
-   - Open the target group in WhatsApp Web.
-   - In browser URL/query payloads you can find the group JID ending with `@g.us`.
-2. From app logs/debugging:
-   - Temporarily instrument your setup to print chat IDs from WhatsApp client and copy the group one.
+```bash
+npm run discover:groups
+```
+
+- The helper authenticates with WhatsApp Web, prints the QR code when needed, and lists your available groups with copyable `GROUP_ID=...` lines.
+- Copy the correct group JID into `.env`.
+
+Fallback method:
+
+1. Open the target group in WhatsApp Web.
+2. Inspect the browser URL/query payloads to find the JID ending with `@g.us`.
 
 `GROUP_ID` must look like `1234567890-123456789@g.us`.
 
