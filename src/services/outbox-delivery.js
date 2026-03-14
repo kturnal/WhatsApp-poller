@@ -3,6 +3,18 @@ const { errorMetadata, log } = require('../logger');
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const OUTBOX_BATCH_SIZE = 20;
 
+class OutboxSendTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`Outbox payload send timed out after ${timeoutMs}ms.`);
+    this.name = 'OutboxSendTimeoutError';
+    this.code = 'OUTBOX_SEND_TIMEOUT';
+  }
+}
+
+function isOutboxSendTimeoutError(error) {
+  return error instanceof OutboxSendTimeoutError || error?.code === 'OUTBOX_SEND_TIMEOUT';
+}
+
 function buildOutboxTextMessage(bot, text, createdAt = bot.now()) {
   return {
     groupId: bot.config.groupId,
@@ -89,7 +101,7 @@ async function sendOutboxPayload(bot, payload) {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(new Error(`Outbox payload send timed out after ${bot.outboxSendTimeoutMs}ms.`));
+      reject(new OutboxSendTimeoutError(bot.outboxSendTimeoutMs));
     }, bot.outboxSendTimeoutMs);
   });
 
@@ -116,6 +128,26 @@ async function deliverOutboxMessage(bot, outboxMessage) {
     });
   } catch (error) {
     const attemptCount = outboxMessage.attemptCount + 1;
+    if (isOutboxSendTimeoutError(error)) {
+      bot.observability.recordOutboxFailure(false);
+      bot.db.markOutboxAmbiguous({
+        outboxId: outboxMessage.id,
+        attemptCount,
+        lastError: error.message
+      });
+
+      log(
+        'ERROR',
+        'Outbox delivery timed out; message state is ambiguous and will not be retried automatically.',
+        errorMetadata(error, {
+          outboxId: outboxMessage.id,
+          attemptCount,
+          maxAttempts: outboxMessage.maxAttempts
+        })
+      );
+      return;
+    }
+
     const exhausted = attemptCount >= outboxMessage.maxAttempts;
     const retryDelayMs = bot.getOutboxRetryDelayMs(attemptCount);
     const nextRetryAt = exhausted ? startedAt : startedAt + retryDelayMs;

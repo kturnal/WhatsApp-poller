@@ -105,6 +105,7 @@ class GameSchedulerBot {
     this.commandWindows = new Map();
     this.voterAliasMap = new Map();
     this.pendingTasks = new Set();
+    this.shuttingDown = false;
     this.outboxTimer = null;
     this.outboxDrainInProgress = false;
     this.observability =
@@ -134,23 +135,26 @@ class GameSchedulerBot {
       log('WARN', 'Chromium sandbox is disabled by ALLOW_INSECURE_CHROMIUM=true.');
     }
 
-    this.client = this.clientFactory({
-      authStrategy: new LocalAuth({
-        clientId: this.config.clientId,
-        dataPath: path.join(this.config.dataDir, 'session')
-      }),
-      puppeteer: {
-        headless: this.config.headless,
-        args: puppeteerArgs
-      }
-    });
-    this.adapter =
-      dependencies.adapter ||
-      new WhatsAppAdapter({
+    if (dependencies.adapter) {
+      this.client = null;
+      this.adapter = dependencies.adapter;
+    } else {
+      this.client = this.clientFactory({
+        authStrategy: new LocalAuth({
+          clientId: this.config.clientId,
+          dataPath: path.join(this.config.dataDir, 'session')
+        }),
+        puppeteer: {
+          headless: this.config.headless,
+          args: puppeteerArgs
+        }
+      });
+      this.adapter = new WhatsAppAdapter({
         client: this.client,
         groupId: this.config.groupId,
         ownerJid: this.config.ownerJid
       });
+    }
 
     this.cronTask = null;
     this.#bindHandlers();
@@ -167,6 +171,10 @@ class GameSchedulerBot {
   }
 
   runSafely(source, fn) {
+    if (this.shuttingDown) {
+      return Promise.resolve();
+    }
+
     const task = Promise.resolve()
       .then(fn)
       .catch((error) => {
@@ -240,6 +248,7 @@ class GameSchedulerBot {
 
   async shutdown(signal) {
     log('INFO', 'Shutting down bot.', { signal });
+    this.shuttingDown = true;
     this.observability.markShutdownStarted();
 
     if (this.cronTask) {

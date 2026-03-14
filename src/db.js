@@ -325,6 +325,33 @@ class PollDatabase {
     return Number(result.lastInsertRowid);
   }
 
+  createPollIntent({ groupId, weekKey, pollMessageId, question, options, createdAt, closesAt }) {
+    const stmt = this.db.prepare(`
+      INSERT INTO polls (
+        group_id,
+        week_key,
+        poll_message_id,
+        question,
+        options_json,
+        status,
+        created_at,
+        closes_at
+      ) VALUES (?, ?, ?, ?, ?, 'CREATING', ?, ?)
+    `);
+
+    const result = stmt.run(
+      groupId,
+      weekKey,
+      pollMessageId,
+      question,
+      JSON.stringify(options),
+      createdAt,
+      closesAt
+    );
+
+    return Number(result.lastInsertRowid);
+  }
+
   replacePollInPlace({ pollId, pollMessageId, question, options, createdAt, closesAt }) {
     const tx = this.db.transaction(() => {
       this.db.prepare('DELETE FROM poll_votes WHERE poll_id = ?').run(pollId);
@@ -352,6 +379,75 @@ class PollDatabase {
     });
 
     tx();
+  }
+
+  preparePollReplacement({ pollId, pollMessageId, question, options, createdAt, closesAt }) {
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM poll_votes WHERE poll_id = ?').run(pollId);
+
+      const stmt = this.db.prepare(`
+        UPDATE polls
+        SET
+          poll_message_id = ?,
+          question = ?,
+          options_json = ?,
+          status = 'CREATING',
+          created_at = ?,
+          closes_at = ?,
+          closed_at = NULL,
+          close_reason = NULL,
+          tie_deadline_at = NULL,
+          tie_option_indices_json = NULL,
+          winning_option_idx = NULL,
+          winner_vote_count = NULL,
+          announced_at = NULL
+        WHERE id = ?
+      `);
+
+      stmt.run(pollMessageId, question, JSON.stringify(options), createdAt, closesAt, pollId);
+    });
+
+    tx();
+  }
+
+  finalizePollCreation({ pollId, pollMessageId, question, options, createdAt, closesAt }) {
+    const stmt = this.db.prepare(`
+      UPDATE polls
+      SET
+        poll_message_id = ?,
+        question = ?,
+        options_json = ?,
+        status = 'OPEN',
+        created_at = ?,
+        closes_at = ?,
+        closed_at = NULL,
+        close_reason = NULL,
+        tie_deadline_at = NULL,
+        tie_option_indices_json = NULL,
+        winning_option_idx = NULL,
+        winner_vote_count = NULL,
+        announced_at = NULL
+      WHERE id = ?
+    `);
+
+    stmt.run(pollMessageId, question, JSON.stringify(options), createdAt, closesAt, pollId);
+  }
+
+  markPollSendFailed({ pollId, errorMessage }) {
+    const stmt = this.db.prepare(`
+      UPDATE polls
+      SET
+        status = 'SEND_FAILED',
+        close_reason = ?,
+        tie_deadline_at = NULL,
+        tie_option_indices_json = NULL,
+        winning_option_idx = NULL,
+        winner_vote_count = NULL,
+        announced_at = NULL
+      WHERE id = ?
+    `);
+
+    stmt.run(errorMessage, pollId);
   }
 
   getPollById(pollId) {
@@ -544,6 +640,20 @@ class PollDatabase {
     `);
 
     stmt.run(attemptCount, nextRetryAt, lastError, outboxId);
+  }
+
+  markOutboxAmbiguous({ outboxId, attemptCount, lastError }) {
+    const stmt = this.db.prepare(`
+      UPDATE outbox
+      SET
+        status = 'AMBIGUOUS',
+        attempt_count = ?,
+        last_error = ?,
+        sent_at = NULL
+      WHERE id = ?
+    `);
+
+    stmt.run(attemptCount, lastError, outboxId);
   }
 
   setTiePending({ pollId, closeReason, closedAt, tieDeadlineAt, tieOptionIndices }) {

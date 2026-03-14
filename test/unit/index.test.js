@@ -192,6 +192,48 @@ test('isRateLimited enforces threshold and purges expired command windows', asyn
   assert.equal(harness.bot.isRateLimited('905551111111@c.us'), false);
 });
 
+test('runSafely is a no-op after shutdown begins', async (t) => {
+  const harness = createBotHarness();
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  let ran = false;
+  harness.bot.shuttingDown = true;
+
+  await harness.bot.runSafely('test', async () => {
+    ran = true;
+  });
+
+  assert.equal(ran, false);
+  assert.equal(harness.bot.pendingTasks.size, 0);
+});
+
+test('constructor skips clientFactory when a custom adapter is provided', async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-poller-unit-index-adapter-'));
+  const config = createConfig(tempDir);
+  const adapter = new EventEmitter();
+  adapter.bindEventHandlers = () => {};
+  adapter.initialize = async () => {};
+  adapter.destroy = async () => {};
+  adapter.getGroupChat = async () => ({});
+
+  const bot = new GameSchedulerBot(config, {
+    adapter,
+    clientFactory: () => {
+      throw new Error('clientFactory should not run when adapter is injected');
+    }
+  });
+
+  t.after(async () => {
+    await bot.shutdown('test');
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.equal(bot.client, null);
+  assert.equal(bot.adapter, adapter);
+});
+
 test('mapVoteSelectionsToOptionIndices deduplicates, sorts, and tracks discarded IDs', async (t) => {
   const harness = createBotHarness();
   t.after(async () => {

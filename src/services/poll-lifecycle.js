@@ -235,6 +235,33 @@ async function createWeeklyPollIfNeeded(bot, trigger) {
   const existingThisWeek = bot.db.getPollByWeekKey(bot.config.groupId, weekKey);
 
   if (existingThisWeek) {
+    if (existingThisWeek.status === 'SEND_FAILED') {
+      log('WARN', 'Retrying weekly poll creation after previous send failure.', {
+        weekKey,
+        existingPollId: existingThisWeek.id,
+        trigger
+      });
+
+      await bot.createPollForWeek({
+        trigger: `${trigger}-retry`,
+        weekYear,
+        weekNumber,
+        weekKey,
+        replacePollId: existingThisWeek.id,
+        createdAt: now.toMillis()
+      });
+      return;
+    }
+
+    if (existingThisWeek.status === 'CREATING') {
+      log('WARN', 'Skipping weekly poll creation because a prior send is still pending review.', {
+        weekKey,
+        existingPollId: existingThisWeek.id,
+        trigger
+      });
+      return;
+    }
+
     log('INFO', 'Weekly poll already exists for week key.', {
       weekKey,
       existingPollId: existingThisWeek.id,
@@ -265,10 +292,37 @@ async function createPollForWeek(
     bot.config.slotTemplate
   );
   const optionLabels = options.map((option) => option.label);
+  const createdAtMillis = Number.isInteger(createdAt) ? createdAt : bot.now();
+  const pollId = Number.isInteger(replacePollId) ? replacePollId : null;
+  const closesAt = createdAtMillis + bot.config.pollCloseHours * 60 * 60 * 1000;
+  const provisionalPollMessageId = `creating:${bot.config.groupId}:${weekKey}:${createdAtMillis}`;
+  let persistedPollId = pollId;
   let pollMessageId = null;
+  let sentMessage = null;
 
   try {
-    const sentMessage = await bot.adapter.sendGroupPoll(
+    if (persistedPollId === null) {
+      persistedPollId = bot.db.createPollIntent({
+        groupId: bot.config.groupId,
+        weekKey,
+        pollMessageId: provisionalPollMessageId,
+        question: bot.config.pollQuestion,
+        options,
+        createdAt: createdAtMillis,
+        closesAt
+      });
+    } else {
+      bot.db.preparePollReplacement({
+        pollId: persistedPollId,
+        pollMessageId: provisionalPollMessageId,
+        question: bot.config.pollQuestion,
+        options,
+        createdAt: createdAtMillis,
+        closesAt
+      });
+    }
+
+    sentMessage = await bot.adapter.sendGroupPoll(
       bot.pollFactory(bot.config.pollQuestion, optionLabels, { allowMultipleAnswers: true })
     );
 
@@ -285,46 +339,32 @@ async function createPollForWeek(
       };
     });
 
-    const createdAtMillis = Number.isInteger(createdAt) ? createdAt : bot.now();
-    const pollId = Number.isInteger(replacePollId) ? replacePollId : null;
-    const closesAt = createdAtMillis + bot.config.pollCloseHours * 60 * 60 * 1000;
+    bot.db.finalizePollCreation({
+      pollId: persistedPollId,
+      pollMessageId,
+      question: bot.config.pollQuestion,
+      options: optionsWithLocalIds,
+      createdAt: createdAtMillis,
+      closesAt
+    });
 
     if (pollId === null) {
-      const newPollId = bot.db.createPoll({
-        groupId: bot.config.groupId,
-        weekKey,
-        pollMessageId,
-        question: bot.config.pollQuestion,
-        options: optionsWithLocalIds,
-        createdAt: createdAtMillis,
-        closesAt
-      });
-
-      bot.scheduleCloseTimer(newPollId, closesAt);
+      bot.scheduleCloseTimer(persistedPollId, closesAt);
       bot.observability.recordPollCreated();
 
       log('INFO', 'Weekly poll created.', {
-        pollId: newPollId,
+        pollId: persistedPollId,
         pollMessageId,
         weekKey,
         closesAt,
         trigger
       });
     } else {
-      bot.db.replacePollInPlace({
-        pollId,
-        pollMessageId,
-        question: bot.config.pollQuestion,
-        options: optionsWithLocalIds,
-        createdAt: createdAtMillis,
-        closesAt
-      });
-
-      bot.scheduleCloseTimer(pollId, closesAt);
+      bot.scheduleCloseTimer(persistedPollId, closesAt);
       bot.observability.recordPollCreated();
 
       log('INFO', 'Weekly poll replaced in place.', {
-        pollId,
+        pollId: persistedPollId,
         pollMessageId,
         weekKey,
         closesAt,
@@ -332,7 +372,14 @@ async function createPollForWeek(
       });
     }
   } catch (error) {
-    if (pollMessageId) {
+    if (!sentMessage && Number.isInteger(persistedPollId)) {
+      bot.db.markPollSendFailed({
+        pollId: persistedPollId,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    if (sentMessage) {
       log(
         'ERROR',
         'Poll was sent but failed to persist in SQLite.',
@@ -815,7 +862,21 @@ async function handleTieTimeout(bot, pollId) {
 
     const tieCandidates = Array.from(new Set(poll.tieOptionIndices)).sort((a, b) => a - b);
     if (tieCandidates.length === 0) {
-      await bot.sendGroupMessage('Tie resolution failed: no tie candidates found.');
+      const timestamp = bot.now();
+      bot.db.setAnnouncedWithOutbox({
+        pollId,
+        closeReason: 'tie-timeout-invalid',
+        closedAt: poll.closedAt || timestamp,
+        announcedAt: timestamp,
+        winnerIdx: null,
+        winnerVotes: 0,
+        outboxMessage: bot.buildOutboxTextMessage(
+          'Tie resolution failed: no tie candidates found.',
+          timestamp
+        )
+      });
+
+      await bot.drainOutboxQueue();
       return;
     }
 
