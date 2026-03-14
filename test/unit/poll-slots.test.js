@@ -8,6 +8,7 @@ const {
   currentWeekContext,
   formatWeekDateRangeLabel,
   isCurrentOrFutureWeek,
+  parseWeeklyPollCron,
   parseWeekSpecifier,
   scheduledWeeklyRunForWeek,
   validateSlotTemplate
@@ -48,12 +49,35 @@ test('currentWeekContext includes ISO week key and timezone aware date', () => {
   assert.equal(context.now.zoneName, 'Europe/Istanbul');
 });
 
-test('scheduledWeeklyRunForWeek points to Monday 12:00 in configured timezone', () => {
-  const scheduled = scheduledWeeklyRunForWeek('Europe/Istanbul', 2026, 8);
+test('parseWeeklyPollCron supports weekly numeric and named weekdays', () => {
+  assert.deepEqual(parseWeeklyPollCron('0 12 * * 1'), {
+    second: 0,
+    minute: 0,
+    hour: 12,
+    weekday: 1
+  });
+  assert.deepEqual(parseWeeklyPollCron('15 30 18 * * fri'), {
+    second: 15,
+    minute: 30,
+    hour: 18,
+    weekday: 5
+  });
+});
 
-  assert.equal(scheduled.weekday, 1);
-  assert.equal(scheduled.hour, 12);
-  assert.equal(scheduled.minute, 0);
+test('parseWeeklyPollCron rejects unsupported cron shapes', () => {
+  assert.throws(() => parseWeeklyPollCron('0 * * * 1'), /fixed hour value/);
+  assert.throws(() => parseWeeklyPollCron('0 12 1 * 1'), /day-of-month/);
+  assert.throws(() => parseWeeklyPollCron('0 12 * 1 1'), /month/);
+  assert.throws(() => parseWeeklyPollCron('0 12 * * 1,3'), /single weekday value/);
+});
+
+test('scheduledWeeklyRunForWeek points to configured weekly cron in timezone', () => {
+  const scheduled = scheduledWeeklyRunForWeek('Europe/Istanbul', 2026, 8, '30 18 * * FRI');
+
+  assert.equal(scheduled.weekday, 5);
+  assert.equal(scheduled.hour, 18);
+  assert.equal(scheduled.minute, 30);
+  assert.equal(scheduled.second, 0);
   assert.equal(scheduled.zoneName, 'Europe/Istanbul');
 });
 

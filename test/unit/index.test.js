@@ -689,3 +689,38 @@ test('auto mode keeps cron/catch-up path and does not invoke startup week select
   assert.equal(catchupCalled, true);
   assert.equal(selectorCalled, false);
 });
+
+test('createCurrentWeekPollIfMissed honors configured weekly POLL_CRON timing', async (t) => {
+  let nowMs = DateTime.fromObject(
+    { year: 2026, month: 3, day: 3, hour: 12, minute: 0 },
+    { zone: 'Europe/Istanbul' }
+  ).toMillis();
+  let catchupTrigger = null;
+  const harness = createBotHarness(
+    {
+      weekSelectionMode: 'auto',
+      pollCron: '30 18 * * FRI'
+    },
+    {
+      now: () => nowMs
+    }
+  );
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  harness.bot.createWeeklyPollIfNeeded = async (trigger) => {
+    catchupTrigger = trigger;
+  };
+
+  await harness.bot.createCurrentWeekPollIfMissed();
+  assert.equal(catchupTrigger, null);
+
+  nowMs = DateTime.fromObject(
+    { year: 2026, month: 3, day: 7, hour: 12, minute: 0 },
+    { zone: 'Europe/Istanbul' }
+  ).toMillis();
+
+  await harness.bot.createCurrentWeekPollIfMissed();
+  assert.equal(catchupTrigger, 'startup-catchup');
+});

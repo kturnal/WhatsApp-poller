@@ -10,7 +10,8 @@ Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
 - Creates one weekly poll in a target group.
   - Default startup mode (`WEEK_SELECTION_MODE=interactive`) asks which ISO week to run (for example `2026 W10 March 2 - March 8`).
-  - Optional auto mode (`WEEK_SELECTION_MODE=auto`) uses `POLL_CRON` (default Monday 12:00) and startup catch-up.
+  - Optional auto mode (`WEEK_SELECTION_MODE=auto`) uses `POLL_CRON` for both scheduled creation and startup catch-up.
+  - `POLL_CRON` must be a fixed weekly schedule with a single day-of-week and fixed hour/minute (for example `0 12 * * 1` or `30 18 * * FRI`).
 - Uses default slot options (customizable via env/file):
   - Weekdays: Mon-Fri 20:00
   - Weekends: Sat/Sun 10:00, 15:00, 20:00

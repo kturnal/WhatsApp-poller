@@ -527,7 +527,12 @@ class GameSchedulerBot {
       this.config.timezone,
       this.now()
     );
-    const scheduledTime = scheduledWeeklyRunForWeek(this.config.timezone, weekYear, weekNumber);
+    const scheduledTime = scheduledWeeklyRunForWeek(
+      this.config.timezone,
+      weekYear,
+      weekNumber,
+      this.config.pollCron
+    );
 
     if (now < scheduledTime) {
       return;

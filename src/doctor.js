@@ -3,8 +3,8 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const cron = require('node-cron');
 const { loadConfig } = require('./config');
+const { parseWeeklyPollCron } = require('./poll-slots');
 const { DIRECTORY_MODE, FILE_MODE, modeToOctal } = require('./runtime-security');
 
 function printResult(status, message) {
@@ -79,10 +79,8 @@ function checkDataDirPermissions(dataDir) {
 
 function checkConfigConsistency(config) {
   if (config.weekSelectionMode === 'auto') {
-    if (!cron.validate(config.pollCron)) {
-      throw new Error(`Invalid POLL_CRON expression: ${config.pollCron}`);
-    }
-    printResult('PASS', `POLL_CRON is valid for auto mode (${config.pollCron}).`);
+    parseWeeklyPollCron(config.pollCron);
+    printResult('PASS', `POLL_CRON is a valid weekly schedule for auto mode (${config.pollCron}).`);
   } else {
     printResult(
       'PASS',

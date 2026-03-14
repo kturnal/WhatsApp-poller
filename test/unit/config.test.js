@@ -106,7 +106,8 @@ test('loadConfig parses explicit security and command settings', () => {
       COMMAND_MAX_LENGTH: '128',
       HEALTH_SERVER_PORT: '8080',
       WEEK_SELECTION_MODE: 'auto',
-      TARGET_WEEK: '2026-W10'
+      TARGET_WEEK: '2026-W10',
+      POLL_CRON: '30 18 * * FRI'
     },
     () => {
       const config = loadConfig();
@@ -120,6 +121,7 @@ test('loadConfig parses explicit security and command settings', () => {
       assert.equal(config.healthServerPort, 8080);
       assert.equal(config.weekSelectionMode, 'auto');
       assert.equal(config.targetWeek, '2026-W10');
+      assert.equal(config.pollCron, '30 18 * * FRI');
     }
   );
 });
@@ -159,6 +161,19 @@ test('loadConfig rejects invalid TARGET_WEEK format', () => {
     },
     () => {
       assert.throws(() => loadConfig(), /TARGET_WEEK must reference a valid ISO week/);
+    }
+  );
+});
+
+test('loadConfig rejects unsupported POLL_CRON shape in auto mode', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      WEEK_SELECTION_MODE: 'auto',
+      POLL_CRON: '0 12 * * 1,3'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /single day-of-week|single weekday value/);
     }
   );
 });
