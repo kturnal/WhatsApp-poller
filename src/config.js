@@ -193,6 +193,24 @@ function loadSlotTemplateConfig() {
   };
 }
 
+function loadClientRuntimeConfig() {
+  const clientId = process.env.CLIENT_ID?.trim() || 'game-scheduler';
+  const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR?.trim() || 'data');
+  const headless = parseBoolean('HEADLESS', true);
+  const allowInsecureChromium = parseBoolean('ALLOW_INSECURE_CHROMIUM', false);
+  const logRedactSensitive = parseBoolean('LOG_REDACT_SENSITIVE', true);
+  const logIncludeStack = parseBoolean('LOG_INCLUDE_STACK', false);
+
+  return {
+    clientId,
+    dataDir,
+    headless,
+    allowInsecureChromium,
+    logRedactSensitive,
+    logIncludeStack
+  };
+}
+
 /**
  * Load and validate runtime configuration from environment variables.
  *
@@ -283,12 +301,14 @@ function loadConfig() {
     }
   }
 
-  const clientId = process.env.CLIENT_ID?.trim() || 'game-scheduler';
-  const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR?.trim() || 'data');
-  const headless = parseBoolean('HEADLESS', true);
-  const allowInsecureChromium = parseBoolean('ALLOW_INSECURE_CHROMIUM', false);
-  const logRedactSensitive = parseBoolean('LOG_REDACT_SENSITIVE', true);
-  const logIncludeStack = parseBoolean('LOG_INCLUDE_STACK', false);
+  const {
+    clientId,
+    dataDir,
+    headless,
+    allowInsecureChromium,
+    logRedactSensitive,
+    logIncludeStack
+  } = loadClientRuntimeConfig();
 
   const rawCommandPrefix = process.env.COMMAND_PREFIX;
   if (rawCommandPrefix !== undefined && rawCommandPrefix.trim() === '') {
@@ -347,5 +367,6 @@ function loadConfig() {
 
 module.exports = {
   loadConfig,
+  loadClientRuntimeConfig,
   normalizeJid
 };

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { loadConfig, normalizeJid } = require('../../src/config');
+const { loadClientRuntimeConfig, loadConfig, normalizeJid } = require('../../src/config');
 
 function withEnv(overrides, fn) {
   const previous = {};
@@ -78,6 +78,29 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       assert.equal(config.slotTemplateSource, 'default');
       assert.equal(config.weekSelectionMode, 'interactive');
       assert.equal(config.targetWeek, null);
+    }
+  );
+});
+
+test('loadClientRuntimeConfig reads reusable client defaults', () => {
+  withEnv(
+    {
+      CLIENT_ID: undefined,
+      DATA_DIR: undefined,
+      HEADLESS: undefined,
+      ALLOW_INSECURE_CHROMIUM: undefined,
+      LOG_REDACT_SENSITIVE: undefined,
+      LOG_INCLUDE_STACK: undefined
+    },
+    () => {
+      const runtimeConfig = loadClientRuntimeConfig();
+
+      assert.equal(runtimeConfig.clientId, 'game-scheduler');
+      assert.equal(runtimeConfig.dataDir, path.resolve(process.cwd(), 'data'));
+      assert.equal(runtimeConfig.headless, true);
+      assert.equal(runtimeConfig.allowInsecureChromium, false);
+      assert.equal(runtimeConfig.logRedactSensitive, true);
+      assert.equal(runtimeConfig.logIncludeStack, false);
     }
   );
 });
