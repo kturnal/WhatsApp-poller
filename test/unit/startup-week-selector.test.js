@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { resolveStartupWeekSelection } = require('../../src/startup-week-selector');
+const {
+  describeInteractiveStartupMode,
+  resolveStartupWeekSelection
+} = require('../../src/startup-week-selector');
 
 function createDbStub(existingByWeekKey = new Map()) {
   return {
@@ -45,6 +48,55 @@ test('resolveStartupWeekSelection prompts until valid current/future week is con
   assert.equal(selection.weekLabel, '2026 W10 March 2 - March 8');
   assert.ok(lines.some((line) => line.includes('Invalid week format')));
   assert.ok(lines.some((line) => line.includes('Past weeks are not allowed')));
+});
+
+test('describeInteractiveStartupMode warns when interactive mode depends on TTY prompt', () => {
+  assert.deepEqual(
+    describeInteractiveStartupMode({
+      weekSelectionMode: 'interactive',
+      targetWeek: null
+    }),
+    {
+      requiresPrompt: true,
+      doctorStatus: 'WARN',
+      doctorMessage:
+        'WEEK_SELECTION_MODE=interactive without TARGET_WEEK depends on a TTY prompt and is unsafe for unattended restarts. Set TARGET_WEEK or switch to auto mode for always-on deployments.',
+      nonInteractiveError:
+        'WEEK_SELECTION_MODE=interactive requires a TTY prompt or TARGET_WEEK to run non-interactively.'
+    }
+  );
+});
+
+test('describeInteractiveStartupMode passes when interactive mode provides TARGET_WEEK', () => {
+  assert.deepEqual(
+    describeInteractiveStartupMode({
+      weekSelectionMode: 'interactive',
+      targetWeek: '2026-W10'
+    }),
+    {
+      requiresPrompt: false,
+      doctorStatus: 'PASS',
+      doctorMessage:
+        'Interactive startup will use TARGET_WEEK=2026-W10 when no TTY prompt is available.',
+      nonInteractiveError: null
+    }
+  );
+});
+
+test('describeInteractiveStartupMode does not treat missing mode as auto', () => {
+  assert.deepEqual(
+    describeInteractiveStartupMode({
+      targetWeek: null
+    }),
+    {
+      requiresPrompt: true,
+      doctorStatus: 'WARN',
+      doctorMessage:
+        'WEEK_SELECTION_MODE=interactive without TARGET_WEEK depends on a TTY prompt and is unsafe for unattended restarts. Set TARGET_WEEK or switch to auto mode for always-on deployments.',
+      nonInteractiveError:
+        'WEEK_SELECTION_MODE=interactive requires a TTY prompt or TARGET_WEEK to run non-interactively.'
+    }
+  );
 });
 
 test('resolveStartupWeekSelection returns replace when existing week is confirmed', async () => {

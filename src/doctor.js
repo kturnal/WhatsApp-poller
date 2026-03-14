@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { loadConfig } = require('./config');
 const { parseWeeklyPollCron } = require('./poll-slots');
 const { DIRECTORY_MODE, FILE_MODE, modeToOctal } = require('./runtime-security');
+const { describeInteractiveStartupMode } = require('./startup-week-selector');
 
 function printResult(status, message) {
   const prefix = status === 'PASS' ? '[PASS]' : status === 'WARN' ? '[WARN]' : '[FAIL]';
@@ -87,6 +88,9 @@ function checkConfigConsistency(config) {
       'Interactive week-selection mode enabled; POLL_CRON is ignored at startup.'
     );
   }
+
+  const startupMode = describeInteractiveStartupMode(config);
+  printResult(startupMode.doctorStatus, startupMode.doctorMessage);
 
   if (!config.allowedVoterSet.has(config.ownerJid)) {
     printResult('WARN', 'OWNER_PHONE is not included in ALLOWED_VOTERS.');
