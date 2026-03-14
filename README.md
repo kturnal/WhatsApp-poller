@@ -161,11 +161,15 @@ After completing setup path 2, keep Docker volume persistence aligned with `DATA
 
 - Optional health/metrics HTTP server:
   - Set `HEALTH_SERVER_PORT` in `.env` (for example `HEALTH_SERVER_PORT=8080`).
+  - Optional: set `HEALTH_SERVER_HOST` to choose the bind interface.
+  - Default binding is `127.0.0.1`, so the server is localhost-only unless you opt into a wider bind host.
+  - Set `HEALTH_SERVER_HOST=0.0.0.0` or `HEALTH_SERVER_HOST=::` only when you intentionally want exposure beyond localhost.
   - Exposes:
     - `GET /health/live`
     - `GET /health/ready`
     - `GET /metrics` (Prometheus text format)
-  - When running in Docker, publish the same port in `docker-compose.yml` (for example `ports: ["8080:8080"]`).
+  - For Docker port publishing or remote scraping, set `HEALTH_SERVER_HOST=0.0.0.0` and publish the same port in `docker-compose.yml` (for example `ports: ["8080:8080"]`).
+  - If you widen the bind host, use Docker/network policy/firewall rules to restrict who can reach the endpoints.
 
 - Example checks:
 

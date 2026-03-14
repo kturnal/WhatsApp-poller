@@ -3,6 +3,12 @@ const assert = require('node:assert/strict');
 
 const { BotObservability } = require('../../src/observability');
 
+test('observability defaults to localhost binding when host is omitted', () => {
+  const observability = new BotObservability();
+
+  assert.equal(observability.host, '127.0.0.1');
+});
+
 test('health endpoints expose liveness and readiness transitions', async (t) => {
   const observability = new BotObservability({
     host: '127.0.0.1',

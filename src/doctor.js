@@ -13,6 +13,10 @@ function printResult(status, message) {
   console.log(`${prefix} ${message}`);
 }
 
+function bindsAllInterfaces(host) {
+  return host === '0.0.0.0' || host === '::';
+}
+
 function canWriteToDataDir(dataDir) {
   fs.mkdirSync(dataDir, { recursive: true });
 
@@ -119,7 +123,15 @@ function checkConfigConsistency(config) {
       'Health/metrics HTTP server is disabled (set HEALTH_SERVER_PORT to enable).'
     );
   } else {
-    printResult('PASS', `Health/metrics HTTP server will bind to port ${config.healthServerPort}.`);
+    const binding = `${config.healthServerHost}:${config.healthServerPort}`;
+    if (bindsAllInterfaces(config.healthServerHost)) {
+      printResult(
+        'WARN',
+        `Health/metrics HTTP server will bind to ${binding} on all interfaces. Restrict access with Docker/network policy if this is intentional.`
+      );
+    } else {
+      printResult('PASS', `Health/metrics HTTP server will bind to ${binding}.`);
+    }
   }
 }
 

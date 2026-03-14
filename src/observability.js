@@ -12,7 +12,7 @@ class BotObservability {
   constructor(options = {}) {
     this.port = Number.isInteger(options.port) ? options.port : null;
     this.host =
-      typeof options.host === 'string' && options.host.trim() ? options.host.trim() : '0.0.0.0';
+      typeof options.host === 'string' && options.host.trim() ? options.host.trim() : '127.0.0.1';
     this.now = typeof options.now === 'function' ? options.now : () => Date.now();
     this.collectRuntimeGauges =
       typeof options.collectRuntimeGauges === 'function'
