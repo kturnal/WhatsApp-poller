@@ -112,10 +112,7 @@ class GameSchedulerBot {
       dependencies.observability ||
       new BotObservability({
         port: Number.isInteger(this.config.healthServerPort) ? this.config.healthServerPort : null,
-        host:
-          typeof this.config.healthServerHost === 'string' && this.config.healthServerHost.trim()
-            ? this.config.healthServerHost.trim()
-            : '127.0.0.1',
+        host: this.config.healthServerHost,
         now: this.now,
         collectRuntimeGauges: () => this.collectRuntimeGauges()
       });
