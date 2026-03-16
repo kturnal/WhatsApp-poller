@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.3.2...whatsapp-poller-v0.4.0) (2026-03-16)
+
+
+### Features
+
+* improve first-run setup flow ([32799d4](https://github.com/kturnal/WhatsApp-poller/commit/32799d4465a089c6dba68e8441c7ddb6ac87a6c5))
+* improve first-run setup flow ([a987307](https://github.com/kturnal/WhatsApp-poller/commit/a987307229249eb1cb168052780492e5a01cd408))
+
+
+### Bug Fixes
+
+* add explicit health server host binding ([745bd56](https://github.com/kturnal/WhatsApp-poller/commit/745bd56b3ae72c5f2e761092dc54b77a63902f58))
+* add explicit health server host binding ([9f64c9a](https://github.com/kturnal/WhatsApp-poller/commit/9f64c9ae678d7ee192cf884e771f88b05b283457))
+* address review feedback ([005e325](https://github.com/kturnal/WhatsApp-poller/commit/005e3254934290c4b4d1554e42553c0ad705edd8))
+* address review findings ([353c800](https://github.com/kturnal/WhatsApp-poller/commit/353c8006df21b4cee6d2474ba5ce436d86fd3783))
+* align startup catch-up with poll cron ([65c4389](https://github.com/kturnal/WhatsApp-poller/commit/65c438927fca8fcfb135741d56a0a387a04ee72a))
+* override vulnerable transitive dependencies ([b129254](https://github.com/kturnal/WhatsApp-poller/commit/b129254144aba60a032358d1302453f7b33cc0b6))
+* scope yauzl override to puppeteer subtree ([e181ac1](https://github.com/kturnal/WhatsApp-poller/commit/e181ac1bfcf75552c26e28d29e9e4cc9eb555634))
+
 ## [0.3.2](https://github.com/kturnal/WhatsApp-poller/compare/whatsapp-poller-v0.3.1...whatsapp-poller-v0.3.2) (2026-03-10)
 
 ### Bug Fixes
