@@ -112,6 +112,7 @@ class GameSchedulerBot {
       dependencies.observability ||
       new BotObservability({
         port: Number.isInteger(this.config.healthServerPort) ? this.config.healthServerPort : null,
+        host: this.config.healthServerHost,
         now: this.now,
         collectRuntimeGauges: () => this.collectRuntimeGauges()
       });
@@ -240,7 +241,10 @@ class GameSchedulerBot {
     log('INFO', 'Starting WhatsApp scheduler bot.');
     const observabilityPort = await this.observability.start();
     if (observabilityPort !== null) {
-      log('INFO', 'Observability HTTP server started.', { port: observabilityPort });
+      log('INFO', 'Observability HTTP server started.', {
+        host: this.observability.host,
+        port: observabilityPort
+      });
     }
 
     await this.adapter.initialize();

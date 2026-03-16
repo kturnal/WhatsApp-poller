@@ -102,6 +102,8 @@ function createConfig(dataDir, overrides = {}) {
     commandRateLimitCount: 2,
     commandRateLimitWindowMs: 60000,
     commandMaxLength: 256,
+    healthServerPort: null,
+    healthServerHost: '127.0.0.1',
     ...overrides
   };
 }
@@ -232,6 +234,19 @@ test('constructor skips clientFactory when a custom adapter is provided', async 
 
   assert.equal(bot.client, null);
   assert.equal(bot.adapter, adapter);
+});
+
+test('constructor passes configured observability host and port', async (t) => {
+  const harness = createBotHarness({
+    healthServerPort: 8080,
+    healthServerHost: '0.0.0.0'
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  assert.equal(harness.bot.observability.port, 8080);
+  assert.equal(harness.bot.observability.host, '0.0.0.0');
 });
 
 test('mapVoteSelectionsToOptionIndices deduplicates, sorts, and tracks discarded IDs', async (t) => {

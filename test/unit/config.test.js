@@ -62,7 +62,8 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       COMMAND_RATE_LIMIT_COUNT: undefined,
       COMMAND_RATE_LIMIT_WINDOW_MS: undefined,
       COMMAND_MAX_LENGTH: undefined,
-      HEALTH_SERVER_PORT: undefined
+      HEALTH_SERVER_PORT: undefined,
+      HEALTH_SERVER_HOST: undefined
     },
     () => {
       const config = loadConfig();
@@ -74,6 +75,7 @@ test('loadConfig reads security defaults and validates command guardrails', () =
       assert.equal(config.commandRateLimitWindowMs, 60000);
       assert.equal(config.commandMaxLength, 256);
       assert.equal(config.healthServerPort, null);
+      assert.equal(config.healthServerHost, '127.0.0.1');
       assert.equal(config.slotTemplate.length, 11);
       assert.equal(config.slotTemplateSource, 'default');
       assert.equal(config.weekSelectionMode, 'interactive');
@@ -128,6 +130,7 @@ test('loadConfig parses explicit security and command settings', () => {
       COMMAND_RATE_LIMIT_WINDOW_MS: '30000',
       COMMAND_MAX_LENGTH: '128',
       HEALTH_SERVER_PORT: '8080',
+      HEALTH_SERVER_HOST: '0.0.0.0',
       WEEK_SELECTION_MODE: 'auto',
       TARGET_WEEK: '2026-W10',
       POLL_CRON: '30 18 * * FRI'
@@ -142,6 +145,7 @@ test('loadConfig parses explicit security and command settings', () => {
       assert.equal(config.commandRateLimitWindowMs, 30000);
       assert.equal(config.commandMaxLength, 128);
       assert.equal(config.healthServerPort, 8080);
+      assert.equal(config.healthServerHost, '0.0.0.0');
       assert.equal(config.weekSelectionMode, 'auto');
       assert.equal(config.targetWeek, '2026-W10');
       assert.equal(config.pollCron, '30 18 * * FRI');
@@ -157,6 +161,18 @@ test('loadConfig rejects invalid HEALTH_SERVER_PORT range', () => {
     },
     () => {
       assert.throws(() => loadConfig(), /HEALTH_SERVER_PORT must be between 1 and 65535/);
+    }
+  );
+});
+
+test('loadConfig rejects HEALTH_SERVER_HOST values containing whitespace', () => {
+  withEnv(
+    {
+      ...baseEnv,
+      HEALTH_SERVER_HOST: '0.0.0.0 local'
+    },
+    () => {
+      assert.throws(() => loadConfig(), /HEALTH_SERVER_HOST must not contain whitespace/);
     }
   );
 });
