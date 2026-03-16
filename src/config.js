@@ -70,6 +70,27 @@ function parseBoolean(name, fallback) {
 }
 
 /**
+ * Parse an environment variable as a trimmed host/interface string or return a fallback.
+ * @param {string} name - Environment variable name to read.
+ * @param {string} fallback - Value to return when the variable is missing or empty.
+ * @returns {string} The normalized host/interface string.
+ * @throws {Error} If the variable contains whitespace after trimming.
+ */
+function parseHost(name, fallback) {
+  const raw = process.env[name];
+  if (!raw || !raw.trim()) {
+    return fallback;
+  }
+
+  const normalized = raw.trim();
+  if (/\s/.test(normalized)) {
+    throw new Error(`Environment variable ${name} must not contain whitespace.`);
+  }
+
+  return normalized;
+}
+
+/**
  * Normalize a phone number or JID into a WhatsApp contact JID.
  *
  * Trims and lowercases the input, extracts the local part (text before `@` if present),
@@ -217,7 +238,7 @@ function loadClientRuntimeConfig() {
  * Reads, normalizes, and validates required environment values (group and owner IDs, allowed voters,
  * numeric limits, timezone, scheduling, and I/O settings) and returns a consolidated configuration object.
  *
- * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, slotTemplate: {weekday:number, hour:number, minute:number}[], slotTemplateSource: string, weekSelectionMode: 'interactive'|'auto', targetWeek: string|null, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null}} Configuration object containing validated and derived settings:
+ * @returns {{groupId: string, ownerJid: string, allowedVoters: string[], allowedVoterSet: Set<string>, requiredVoters: number, timezone: string, pollCloseHours: number, tieOverrideHours: number, pollCron: string, pollQuestion: string, slotTemplate: {weekday:number, hour:number, minute:number}[], slotTemplateSource: string, weekSelectionMode: 'interactive'|'auto', targetWeek: string|null, clientId: string, dataDir: string, headless: boolean, commandPrefix: string, allowInsecureChromium: boolean, logRedactSensitive: boolean, logIncludeStack: boolean, commandRateLimitCount: number, commandRateLimitWindowMs: number, commandMaxLength: number, healthServerPort: number|null, healthServerHost: string}} Configuration object containing validated and derived settings:
  * - `groupId`: WhatsApp group JID ending with `@g.us`.
  * - `ownerJid`: Normalized owner JID in the form `<local>@c.us`.
  * - `allowedVoters`: Array of normalized voter JIDs.
@@ -243,6 +264,7 @@ function loadClientRuntimeConfig() {
  * - `commandRateLimitWindowMs`: Rate-limit window duration in milliseconds.
  * - `commandMaxLength`: Maximum accepted command text length.
  * - `healthServerPort`: Optional port for health/metrics HTTP server (`null` disables server).
+ * - `healthServerHost`: Host/interface for the health/metrics HTTP server.
  */
 function loadConfig() {
   const groupId = mustReadEnv('GROUP_ID');
@@ -335,6 +357,7 @@ function loadConfig() {
   if (healthServerPort !== null && (healthServerPort < 1 || healthServerPort > 65535)) {
     throw new Error('HEALTH_SERVER_PORT must be between 1 and 65535.');
   }
+  const healthServerHost = parseHost('HEALTH_SERVER_HOST', '127.0.0.1');
 
   return {
     groupId,
@@ -361,7 +384,8 @@ function loadConfig() {
     commandRateLimitCount,
     commandRateLimitWindowMs,
     commandMaxLength,
-    healthServerPort
+    healthServerPort,
+    healthServerHost
   };
 }
 
