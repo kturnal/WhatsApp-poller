@@ -220,6 +220,12 @@ Fallback method:
 - `!schedule help`
 - `!schedule status`
 - `!schedule pick <option_number>` (owner-only, tie-only)
+- `npm run admin:poll -- status [--poll-id <id>]`
+- `npm run admin:poll -- pick <option_number> [--poll-id <id>]`
+- `npm run admin:poll -- timeout [--poll-id <id>]`
+
+The admin CLI uses the persisted WhatsApp session locally, skips normal startup poll creation, and can resolve a `TIE_PENDING` poll without posting an owner command in the group chat.
+It starts its own WhatsApp client and uses the same persisted `LocalAuth` session as the main bot, so this is single-session only. If the main bot is still running, `npm run admin:poll -- status`, `npm run admin:poll -- pick ...`, and `npm run admin:poll -- timeout ...` will conflict with that active session. Stop the main bot first, or use a separate remote/admin API instead of running the CLI against the same session.
 
 ## Security defaults
 

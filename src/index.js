@@ -73,6 +73,7 @@ const DEFAULT_OUTBOX_SEND_TIMEOUT_MS = 30 * 1000;
 class GameSchedulerBot {
   constructor(config, dependencies = {}) {
     this.config = config;
+    this.skipAutomatedStartup = dependencies.skipAutomatedStartup === true;
     this.now = dependencies.now || (() => Date.now());
     this.outboxMaxAttempts =
       Number.isInteger(dependencies.outboxMaxAttempts) && dependencies.outboxMaxAttempts > 0
@@ -108,6 +109,12 @@ class GameSchedulerBot {
     this.shuttingDown = false;
     this.outboxTimer = null;
     this.outboxDrainInProgress = false;
+    this.startupSettled = false;
+    this.startupCompletePromise = new Promise((resolve, reject) => {
+      this.resolveStartupComplete = resolve;
+      this.rejectStartupComplete = reject;
+    });
+    this.startupCompletePromise.catch(() => {});
     this.observability =
       dependencies.observability ||
       new BotObservability({
@@ -189,6 +196,40 @@ class GameSchedulerBot {
     return task;
   }
 
+  setStartupOutcome(error = null) {
+    if (this.startupSettled) {
+      return;
+    }
+
+    this.startupSettled = true;
+
+    if (error) {
+      this.rejectStartupComplete(error);
+      return;
+    }
+
+    this.resolveStartupComplete();
+  }
+
+  async waitForStartup(timeoutMs = 90000) {
+    let timeout = null;
+
+    try {
+      return await Promise.race([
+        this.startupCompletePromise,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`Bot startup did not complete within ${timeoutMs}ms.`));
+          }, timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   #bindHandlers() {
     this.adapter.bindEventHandlers({
       qr: (qr) => {
@@ -199,14 +240,22 @@ class GameSchedulerBot {
         this.observability.markClientReady();
         this.observability.markStartupPending();
         this.runSafely('ready', async () => {
-          await this.onReady();
+          try {
+            await this.onReady();
+            this.setStartupOutcome();
+          } catch (error) {
+            this.setStartupOutcome(error);
+            throw error;
+          }
         });
       },
       auth_failure: (message) => {
+        this.setStartupOutcome(new Error(`Authentication failure: ${message}`));
         this.observability.markClientNotReady();
         log('ERROR', 'Authentication failure.', { message });
       },
       disconnected: (reason) => {
+        this.setStartupOutcome(new Error(`Client disconnected: ${reason}`));
         this.observability.markClientDisconnected();
         log('WARN', 'Client disconnected.', { reason });
       },
@@ -253,6 +302,7 @@ class GameSchedulerBot {
   async shutdown(signal) {
     log('INFO', 'Shutting down bot.', { signal });
     this.shuttingDown = true;
+    this.setStartupOutcome(new Error(`Bot shut down before startup completed (${signal}).`));
     this.observability.markShutdownStarted();
 
     if (this.cronTask) {
@@ -316,15 +366,17 @@ class GameSchedulerBot {
       weekSelectionMode
     });
 
-    await this.reconcilePendingPollVotes();
-    this.recoverPendingPolls();
-    await this.recoverOutboxMessages();
+    if (!this.skipAutomatedStartup) {
+      await this.reconcilePendingPollVotes();
+      this.recoverPendingPolls();
+      await this.recoverOutboxMessages();
 
-    if (weekSelectionMode === 'auto') {
-      this.startCronIfNeeded();
-      await this.createCurrentWeekPollIfMissed();
-    } else {
-      await this.createStartupSelectedWeekPollIfNeeded();
+      if (weekSelectionMode === 'auto') {
+        this.startCronIfNeeded();
+        await this.createCurrentWeekPollIfMissed();
+      } else {
+        await this.createStartupSelectedWeekPollIfNeeded();
+      }
     }
 
     this.observability.markStartupComplete();
