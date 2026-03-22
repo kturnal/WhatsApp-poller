@@ -33,3 +33,5 @@ data/
 .DS_Store
 .vscode/
 .idea/
+.codex
+AGENTS.md

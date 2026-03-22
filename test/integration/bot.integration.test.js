@@ -7,6 +7,10 @@ const { EventEmitter } = require('node:events');
 const { DateTime } = require('luxon');
 
 const { GameSchedulerBot } = require('../../src/index');
+const {
+  resolveTiePollByOption,
+  resolveTiePollByTimeout
+} = require('../../src/services/admin-actions');
 
 const NON_EXPIRED_NOW = DateTime.fromObject(
   { year: 2026, month: 3, day: 2, hour: 12, minute: 0 },
@@ -671,6 +675,43 @@ test('tie can be resolved with owner manual pick', async (t) => {
   assert.equal(latest.winningOptionIdx, 1);
 });
 
+test('tie can be resolved with admin action without a group command', async (t) => {
+  const harness = createHarness({
+    now: () => NON_EXPIRED_NOW
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-1' }]
+  });
+
+  const result = await resolveTiePollByOption(harness.bot, {
+    pollId: activePoll.id,
+    optionIdx: 1,
+    closeReason: 'manual-override-cli'
+  });
+
+  assert.equal(result.status, 'ok');
+  await harness.bot.drainOutboxQueue();
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 1);
+});
+
 test('tie timeout with expired winning slot closes without winner', async (t) => {
   const harness = createHarness({
     now: () => EXPIRED_NOW
@@ -712,6 +753,38 @@ test('tie timeout with expired winning slot closes without winner', async (t) =>
   assert.ok(
     ownerMessages.some((message) => message.includes('closed without a winner announcement'))
   );
+});
+
+test('tie timeout admin action applies automatic winner selection', async (t) => {
+  const harness = createHarness({
+    now: () => NON_EXPIRED_NOW
+  });
+  t.after(async () => {
+    await harness.cleanup();
+  });
+
+  await harness.bot.createWeeklyPollIfNeeded('integration');
+  const activePoll = harness.bot.db.getActivePoll(harness.config.groupId);
+  assert.ok(activePoll);
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905551111111',
+    selectedOptions: [{ localId: 'opt-0' }]
+  });
+
+  await harness.bot.onVoteUpdate({
+    parentMessage: { id: activePoll.pollMessageId },
+    voter: '905552222222',
+    selectedOptions: [{ localId: 'opt-1' }]
+  });
+
+  const result = await resolveTiePollByTimeout(harness.bot, activePoll.id);
+  assert.equal(result.status, 'ok');
+
+  const latest = harness.bot.db.getPollById(activePoll.id);
+  assert.equal(latest.status, 'ANNOUNCED');
+  assert.equal(latest.winningOptionIdx, 0);
 });
 
 test('manual tie pick can still announce an expired slot winner', async (t) => {

@@ -1,5 +1,6 @@
 const { DateTime } = require('luxon');
 
+const { resolveTiePollByOption } = require('./admin-actions');
 const { getMessageSenderJid } = require('../message-utils');
 const { log } = require('../logger');
 
@@ -181,42 +182,26 @@ async function handleManualPick(bot, message, optionRaw) {
 
   const optionIdx = optionNumber - 1;
 
-  const lockResult = await bot.withPollLock(active.id, async () => {
-    const latest = bot.db.getPollById(active.id);
-    if (!latest || latest.status !== 'TIE_PENDING') {
-      return { status: 'no_tie' };
-    }
-
-    if (!latest.tieOptionIndices.includes(optionIdx)) {
-      return {
-        status: 'invalid_option',
-        tied: latest.tieOptionIndices.map((index) => index + 1)
-      };
-    }
-
-    bot.clearTimer(bot.tieTimers, latest.id);
-
-    const summary = bot.summarizePoll(latest);
-    const winnerVotes = summary.counts[optionIdx] || 0;
-    bot.finalizeWinner(latest, optionIdx, winnerVotes, 'manual-override');
-
-    return { status: 'ok' };
+  const lockResult = await resolveTiePollByOption(bot, {
+    pollId: active.id,
+    optionIdx,
+    closeReason: 'manual-override'
   });
 
-  if (lockResult === false) {
-    await bot.sendGroupMessage('Another tie operation is in progress. Please retry in a moment.');
-    return;
-  }
-
-  if (lockResult.status === 'no_tie') {
+  if (lockResult.status === 'poll_not_found' || lockResult.status === 'not_tie') {
     await bot.sendGroupMessage('No tie is waiting for manual pick right now.');
     return;
   }
 
   if (lockResult.status === 'invalid_option') {
     await bot.sendGroupMessage(
-      `Invalid option. Allowed tied option numbers: ${lockResult.tied.join(', ')}`
+      `Invalid option. Allowed tied option numbers: ${lockResult.tiedOptionNumbers.join(', ')}`
     );
+    return;
+  }
+
+  if (lockResult.status === 'busy') {
+    await bot.sendGroupMessage('Another tie operation is in progress. Please retry in a moment.');
     return;
   }
 
