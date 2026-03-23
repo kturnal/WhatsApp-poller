@@ -6,6 +6,10 @@
 
 Single-group WhatsApp bot that creates a weekly poll for game-night planning.
 
+For a test/sandbox group, the recommended approach is a second isolated bot instance with its own
+env file, WhatsApp session, and data directory. This repo does not yet support one runtime managing
+multiple groups.
+
 ## What it does
 
 - Creates one weekly poll in a target group.
@@ -101,6 +105,23 @@ Use this for Docker, VPS, or home-server deployments that must survive restarts 
    docker compose up -d --build
    ```
 
+### Sandbox deployment strategy
+
+- Use a second isolated instance when you want a sandbox/test group.
+- Do not reuse the production instance for this. The bot intentionally processes one configured
+  group at a time.
+- Give the sandbox instance its own:
+  - `GROUP_ID`
+  - `CLIENT_ID`
+  - `DATA_DIR`
+  - optional `HEALTH_SERVER_PORT`
+  - optional `POLL_CRON` if you want sandbox messages on a different schedule
+- `CLIENT_ID` and `DATA_DIR` must both be unique per running instance. Changing only `GROUP_ID` is
+  not enough because WhatsApp `LocalAuth` session files and the SQLite database both live under the
+  instance data directory.
+- Choose a separate sandbox instance for isolation and low blast radius. Treat multi-group support
+  as a separate future feature if you later need one process to manage many groups.
+
 ### Why always-on
 
 - Always-on hosting is the recommended production mode for weekly polls.
@@ -114,6 +135,39 @@ After completing setup path 2, keep Docker volume persistence aligned with `DATA
 - Persistent `/app/data` stores:
   - WhatsApp session (`/app/data/session`)
   - SQLite poll state (`/app/data/polls.sqlite`)
+
+### Dual-instance example: prod + sandbox
+
+Use [docker-compose.dual-instance.example.yml](docker-compose.dual-instance.example.yml) when you
+want a production group and a sandbox group running side by side.
+
+1. Create two env files:
+
+   ```bash
+   cp .env.example .env.prod
+   cp .env.sandbox.example .env.sandbox
+   ```
+
+2. Fill each file with its own `GROUP_ID`, `CLIENT_ID`, and `DATA_DIR`.
+3. Keep `DATA_DIR` aligned with the volume mounts in the compose file.
+4. If both instances expose health endpoints, assign different `HEALTH_SERVER_PORT` values.
+5. Start both services:
+
+   ```bash
+   docker compose -f docker-compose.dual-instance.example.yml up -d --build
+   ```
+
+For local shell-based runs outside Docker, load one env file per process before starting the bot:
+
+```bash
+(set -a; source .env.prod; set +a; npm run doctor)
+(set -a; source .env.sandbox; set +a; npm run doctor)
+```
+
+```bash
+(set -a; source .env.prod; set +a; npm start)
+(set -a; source .env.sandbox; set +a; npm start)
+```
 
 ### First-time QR login
 
@@ -206,7 +260,7 @@ npm run discover:groups
 ```
 
 - The helper authenticates with WhatsApp Web, prints the QR code when needed, and lists your available groups with copyable `GROUP_ID=...` lines.
-- Copy the correct group JID into `.env`.
+- Copy the correct group JID into `.env`, `.env.prod`, or `.env.sandbox`.
 
 Fallback method:
 
@@ -239,6 +293,7 @@ It starts its own WhatsApp client and uses the same persisted `LocalAuth` sessio
 `.env.example` is the canonical configuration reference for all runtime environment variables, including defaults, valid values, constraints, and examples.
 
 - Copy `.env.example` to `.env` and change required values (`GROUP_ID`, `OWNER_PHONE`, `ALLOWED_VOTERS`).
+- Use `.env.sandbox.example` as the starting point for a second sandbox/test instance.
 - Use `npm run doctor` after edits to validate your configuration before startup.
 
 ## Development
