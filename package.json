@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-poller",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Weekly WhatsApp game-time poll bot for a fixed friend group",
   "license": "MIT",
   "private": true,
