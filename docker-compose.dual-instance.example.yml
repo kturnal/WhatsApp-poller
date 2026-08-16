@@ -1,0 +1,36 @@
+services:
+  whatsapp-poller-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-poller-prod
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    volumes:
+      - ./data/prod:/app/data
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    # If HEALTH_SERVER_PORT is enabled in .env.prod and you want host access, publish that port here.
+    # ports:
+    #   - "8080:8080"
+
+  whatsapp-poller-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-poller-sandbox
+    restart: unless-stopped
+    env_file:
+      - .env.sandbox
+    volumes:
+      - ./data/sandbox:/app/data
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    # If HEALTH_SERVER_PORT is enabled in .env.sandbox and you want host access, publish that port here.
+    # ports:
+    #   - "8081:8081"
